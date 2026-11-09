@@ -1,0 +1,25 @@
+{
+  "name": "nai-artist-shuffle",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "NAI 작가 셔플: 작가 태그 가중치를 무작위로 섞어 조합마다 그림을 뽑아 비교하는 안드로이드 앱",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "android:prepare": "node scripts/build.mjs && npx cap add android && node scripts/patch-android.mjs && npx cap sync android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.0.0",
+    "@capacitor/app": "^7.0.0",
+    "@capacitor/browser": "^7.0.0",
+    "@capacitor/clipboard": "^7.0.0",
+    "@capacitor/core": "^7.0.0",
+    "@capacitor/filesystem": "^7.0.0",
+    "@capacitor/share": "^7.0.0",
+    "@capacitor/status-bar": "^7.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.0.0",
+    "esbuild": "^0.25.0"
+  }
+}

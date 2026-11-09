@@ -1,0 +1,14 @@
+{
+  "appId": "io.github.taki9702.naiartistshuffle",
+  "appName": "NAI 작가 셔플",
+  "webDir": "www",
+  "backgroundColor": "#141017",
+  "android": {
+    "backgroundColor": "#141017",
+    "adjustMarginsForEdgeToEdge": "force",
+    "allowMixedContent": false
+  },
+  "plugins": {
+    "CapacitorHttp": { "enabled": false }
+  }
+}
