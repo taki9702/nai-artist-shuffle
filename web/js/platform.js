@@ -13,6 +13,8 @@ const StatusBar = registerPlugin('StatusBar');
 const ScreenAwake = registerPlugin('ScreenAwake');
 
 export { Filesystem, Capacitor };
+// 앱 전용 플러그인: 화면 켜 두기, 배터리, 알림, 그림 생성 서비스(genEnqueue/genStatus/genAck/genCancel)
+export { ScreenAwake as Gen };
 
 // ---------------------------------------------------------------- bytes <-> base64
 export function toBase64(bytes) {

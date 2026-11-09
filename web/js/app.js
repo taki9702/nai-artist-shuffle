@@ -2,11 +2,11 @@
 import { VERSION, REPO } from './version.js';
 import { DEFAULT_SETTINGS, DEFAULT_FAVS } from './defaults.js';
 import { parse, artists, build, artistLine, shuffleWeights, topArtists, fmt } from './shuffle.js';
-import { MODELS, SAMPLERS, SIZES, RETRY_STATUSES, RETRY_DELAYS, AUTH_STATUSES, generateImage, fetchSubscription, randomSeed } from './nai.js';
+import { MODELS, SAMPLERS, SIZES, RETRY_STATUSES, RETRY_DELAYS, AUTH_STATUSES, generateImage, fetchSubscription, randomSeed, buildPayload } from './nai.js';
 import * as store from './store.js';
 import {
   native, Filesystem, toBase64, http, copyToClipboard, openExternal, downloadBlob, onBackButton, minimizeApp,
-  styleStatusBar, keepAwake, backgroundWork, backgroundNotice, askNotifications, batteryState, shareFile,
+  styleStatusBar, keepAwake, backgroundWork, backgroundNotice, askNotifications, batteryState, shareFile, Gen, fromBase64,
 } from './platform.js';
 
 // ---------------------------------------------------------------- tiny DOM helper
@@ -85,7 +85,8 @@ async function load() {
   S.counter = Number(counter) || 8;
   S.runs = await store.runList();
   // 앱이 꺼지면서 멈춘 그림은 '중단'으로 표시해 다시 뽑을 수 있게 한다.
-  for (const run of S.runs) {
+  // (폰에서는 생성 서비스가 계속 뽑고 있을 수 있으므로 서비스 상태를 받아 본 뒤에 정한다.)
+  if (!native) for (const run of S.runs) {
     let changed = false;
     for (const c of run.combos) for (const im of c.images) if (im.status === 'wait' || im.status === 'run') { im.status = 'stop'; changed = true; }
     if (changed) await store.runPut(run);
@@ -113,10 +114,126 @@ function enqueue(run, list) {
     run.combos[ci].images[ii].error = '';
     Q.items.push({ runId: run.id, ci, ii });
   }
-  Q.total += list.length;
   store.runPut(run).catch(() => {});
+  if (native) {
+    Q.items = Q.items.filter((i) => i.runId !== run.id || !list.some(([ci, ii]) => ci === i.ci && ii === i.ii));
+    nativeEnqueue(run, list);
+    renderAll();
+    return;
+  }
+  Q.total += list.length;
   if (!Q.busy) processQueue();
   renderAll();
+}
+
+// ---------------------------------------------------------------- 폰: 생성 서비스에 맡기기
+// 서비스(네이티브)가 NovelAI 요청과 저장을 직접 하므로 화면이 멈춰도 계속 뽑는다.
+// 화면이 보일 때마다 끝난 그림을 가져와 탭에 채운다.
+const keyOf = (run, ci, ii) => `${run.id}_${ci}_${ii}`;
+function parseKey(k) {
+  const m = String(k).match(/^(r\d+)_(\d+)_(\d+)$/);
+  return m ? { runId: m[1], ci: Number(m[2]), ii: Number(m[3]) } : null;
+}
+
+async function nativeEnqueue(run, list) {
+  let jobs;
+  try {
+    jobs = list.map(([ci, ii]) => {
+      const c = run.combos[ci];
+      return { key: keyOf(run, ci, ii), body: JSON.stringify(buildPayload({ ...run.params, prompt: c.prompt }, c.images[ii].seed)) };
+    });
+    askNotifications();
+    pending++;
+    try { await Gen.genEnqueue({ apiKey: S.settings.apiKey, jobs }); } finally { pending--; }
+    Q.busy = true;
+    wasBusy = true;
+  } catch (e) {
+    for (const [ci, ii] of list) { const im = run.combos[ci].images[ii]; im.status = 'stop'; im.error = String(e?.message || e); }
+    store.runPut(run).catch(() => {});
+    toast(`뽑기를 시작하지 못했어요: ${e?.message || e}`, 'bad');
+  }
+  syncNative();
+}
+
+let syncing = false, wasBusy = false, synced = false, pending = 0;
+async function syncNative() {
+  if (!native || syncing) return;
+  syncing = true;
+  try {
+    const st = await Gen.genStatus();
+    const results = Array.isArray(st.results) ? st.results : [];
+    const queued = new Set(Array.isArray(st.queueKeys) ? st.queueKeys : []);
+    const touched = new Set();
+    const cells = [];
+    const acks = [];
+    let fatal = '';
+    for (const r of results) {
+      acks.push(r.key);
+      const k = parseKey(r.key);
+      const run = k && runById(k.runId);
+      const combo = run?.combos[k.ci];
+      const im = combo?.images[k.ii];
+      if (!im) continue;
+      if (r.status === 'done') {
+        try {
+          const f = await Filesystem.readFile({ path: `gen/img/${r.key}.png`, directory: 'DATA' });
+          const id = `${run.id}-${combo.no}-${k.ii}-${im.seed}`;
+          await store.imagePut(id, new Blob([fromBase64(f.data)], { type: 'image/png' }));
+          im.id = id;
+          im.status = 'done';
+          im.error = '';
+        } catch (e) {
+          im.status = 'fail';
+          im.error = `그림 파일을 읽지 못했어요: ${e?.message || e}`;
+        }
+      } else {
+        im.status = r.status === 'fail' ? 'fail' : 'stop';
+        im.error = r.error || '';
+        if (r.fatal) fatal = r.error || '';
+      }
+      touched.add(run);
+      cells.push([run, k.ci, k.ii]);
+    }
+    const busy = Boolean(st.running) || queued.size > 0;
+    for (const run of S.runs) {
+      run.combos.forEach((c, ci) => c.images.forEach((im, ii) => {
+        const key = keyOf(run, ci, ii);
+        if (key === st.current) {
+          if (im.status !== 'run') { im.status = 'run'; cells.push([run, ci, ii]); }
+        } else if (im.status === 'run' && queued.has(key)) {
+          im.status = 'wait'; cells.push([run, ci, ii]);
+        } else if ((im.status === 'run' || im.status === 'wait') && !queued.has(key) && !busy && !pending) {
+          im.status = 'stop'; touched.add(run); cells.push([run, ci, ii]);
+        }
+      }));
+    }
+    for (const run of touched) await store.runPut(run).catch(() => {});
+    if (acks.length) await Gen.genAck({ keys: acks }).catch(() => {});
+    Q.busy = busy;
+    Q.done = Number(st.done) || 0;
+    Q.total = Number(st.total) || 0;
+    Q.waitUntil = st.retryIn > 0 ? Date.now() + st.retryIn * 1000 : 0;
+    for (const [run, ci, ii] of cells) updateCell(run, ci, ii);
+    if (wasBusy && !busy && synced) {
+      if (fatal) toast(fatal, 'bad');
+      else toast('다 뽑았어요', 'ok');
+    } else if (fatal) toast(fatal, 'bad');
+    wasBusy = busy;
+    synced = true;
+    renderStatus();
+    renderNav();
+  } catch (e) {
+    /* 다음 번에 다시 */
+  } finally {
+    syncing = false;
+  }
+}
+
+function startNativeSync() {
+  if (!native) return;
+  syncNative();
+  setInterval(() => { if (!document.hidden) syncNative(); }, 1500);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) syncNative(); });
 }
 
 async function cancellableWait(seconds) {
@@ -636,7 +753,7 @@ function viewHistory() {
 }
 
 async function deleteRun(run) {
-  if (Q.items.some((i) => i.runId === run.id) || (Q.busy && run.combos.some((c) => c.images.some((i) => i.status === 'run')))) { toast('뽑는 중인 기록은 지울 수 없어요. 먼저 멈춰 주세요.', 'bad'); return; }
+  if (Q.items.some((i) => i.runId === run.id) || (Q.busy && run.combos.some((c) => c.images.some((i) => i.status === 'run' || i.status === 'wait')))) { toast('뽑는 중인 기록은 지울 수 없어요. 먼저 멈춰 주세요.', 'bad'); return; }
   for (const c of run.combos) for (const im of c.images) if (im.id) {
     await store.imageDelete(im.id).catch(() => {});
     if (urls.has(im.id)) { URL.revokeObjectURL(urls.get(im.id)); urls.delete(im.id); }
@@ -683,7 +800,7 @@ function viewSettings() {
       h('label', { class: 'check' }, h('input', { type: 'checkbox', id: 'in-space', checked: st.space, onchange: (e) => { S.settings.space = e.target.checked; saveSettings(); } }), h('span', {}, '`::` 앞에 공백 넣기 (예: 1.0::artist:이름 ::)'))),
     h('section', { class: 'card' },
       h('h2', {}, '백그라운드 생성'),
-      h('p', { class: 'muted small' }, '다른 앱을 쓰는 동안에도 계속 뽑으려면 배터리 최적화를 꺼 주세요. 뽑는 동안 알림에 진행 상황이 보여요.'),
+      h('p', { class: 'muted small' }, '그림은 앱과 따로 도는 생성 서비스가 뽑아요. 다른 앱을 쓰거나 화면을 꺼도 계속 뽑고, 앱을 다시 열면 결과가 채워져요. 배터리 최적화는 꺼 두세요.'),
       h('button', { class: 'btn small', onclick: async () => { const s = await batteryState(true); toast(s == null ? '폰 앱에서만 쓸 수 있어요' : s.unrestricted ? '이미 꺼져 있어요' : '설정 화면에서 허용해 주세요'); } }, '배터리 최적화 끄기')),
     h('section', { class: 'card' },
       h('h2', {}, '앱 정보'),
@@ -725,7 +842,7 @@ function renderStatus() {
       h('div', { class: 'status-bar', style: `--p:${Q.total ? (Q.done / Q.total) * 100 : 0}%` }),
       h('div', { class: 'status-row' },
         h('span', {}, `뽑는 중 ${Q.done}/${Q.total}${wait}`),
-        h('button', { class: 'btn small ghost', onclick: () => { Q.cancel = true; toast('지금 그림까지만 뽑고 멈춰요'); } }, '멈추기')));
+        h('button', { class: 'btn small ghost', onclick: () => { if (native) { Gen.genCancel().then(syncNative).catch(() => {}); } else Q.cancel = true; toast('지금 그림까지만 뽑고 멈춰요'); } }, '멈추기')));
   }
   renderMakeButton();
 }
@@ -777,6 +894,7 @@ document.addEventListener('keydown', (e) => {
   }
   document.getElementById('boot')?.remove();
   renderAll();
+  startNativeSync();
   // 테스트용: 브라우저 미리보기에서 ?mock 이면 가짜 그림을 만든다.
   if (!native && /[?&]mock\b/.test(location.search)) window.__mock = true;
 })();
