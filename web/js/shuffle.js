@@ -82,3 +82,33 @@ export function shuffleWeights(base, locked, { avg, min, max, jitter, mode }) {
 export function topArtists(names, weights, k = 4) {
   return names.map((n, i) => [weights[i], n]).sort((a, b) => b[0] - a[0]).slice(0, k);
 }
+
+// ---------------------------------------------------------------- 작가 순서
+// 작가 자리(앞뒤 공백·줄바꿈)는 그대로 두고, 각 자리에 들어갈 작가(이름·가중치)만 order 순서로 바꾼다.
+// order: 새 순서대로 늘어놓은 원래 작가 번호들.
+export function reorder(segs, order) {
+  const arts = segs.filter((s) => s.art);
+  let k = 0;
+  return segs.map((s) => {
+    if (!s.art) return s;
+    const src = arts[order[k]];
+    k++;
+    return { ...s, name: src.name, w: src.w };
+  });
+}
+
+// 저장해 둔 이름 순서대로. 목록에 없는 작가는 원래 순서대로 맨 뒤에 둔다.
+export function orderByNames(arts, names) {
+  const pos = new Map(names.map((n, i) => [n, i]));
+  const rank = (i) => (pos.has(arts[i].name) ? pos.get(arts[i].name) : 1e9 + i);
+  return arts.map((_, i) => i).sort((a, b) => rank(a) - rank(b));
+}
+
+export function shuffledOrder(n) {
+  const o = Array.from({ length: n }, (_, i) => i);
+  for (let i = n - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [o[i], o[j]] = [o[j], o[i]];
+  }
+  return o;
+}

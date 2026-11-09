@@ -1,7 +1,7 @@
 // NAI 작가 셔플: 프롬프트 속 작가 가중치를 섞어 조합을 만들고, 조합마다 그림을 뽑아 탭으로 비교한다.
 import { VERSION, REPO } from './version.js';
 import { DEFAULT_SETTINGS, DEFAULT_FAVS } from './defaults.js';
-import { parse, artists, build, artistLine, shuffleWeights, topArtists, fmt } from './shuffle.js';
+import { parse, artists, build, artistLine, shuffleWeights, topArtists, fmt, reorder, orderByNames, shuffledOrder } from './shuffle.js';
 import { MODELS, SAMPLERS, SIZES, RETRY_STATUSES, RETRY_DELAYS, AUTH_STATUSES, generateImage, fetchSubscription, randomSeed, buildPayload } from './nai.js';
 import * as store from './store.js';
 import {
@@ -68,17 +68,20 @@ const S = {
   settings: { ...DEFAULT_SETTINGS },
   locks: {},
   favs: [],
+  orders: [],
   counter: 0,
   view: 'make',
   runs: [],
   currentRunId: null,
   tab: 0,
+  detail: false,  // 결과 탭: false = 갤러리(조합마다 대표 그림), true = 조합 하나 크게
   sub: null,
 };
 const urls = new Map();  // 그림 id -> object URL
 
 async function load() {
-  const [settings, locks, favs, counter] = await Promise.all([store.kvGet('settings'), store.kvGet('locks'), store.kvGet('favs'), store.kvGet('counter')]);
+  const [settings, locks, favs, counter, orders] = await Promise.all([store.kvGet('settings'), store.kvGet('locks'), store.kvGet('favs'), store.kvGet('counter'), store.kvGet('orders')]);
+  S.orders = Array.isArray(orders) ? orders : [];
   S.settings = { ...DEFAULT_SETTINGS, ...(settings || {}) };
   S.locks = locks || {};
   S.favs = Array.isArray(favs) ? favs : DEFAULT_FAVS.map((f) => ({ ...f }));
@@ -102,6 +105,9 @@ function saveSettings() {
 }
 const saveLocks = () => store.kvSet('locks', S.locks).catch(() => {});
 const saveFavs = () => store.kvSet('favs', S.favs).catch(() => {});
+const saveOrders = () => store.kvSet('orders', S.orders).catch(() => {});
+// 조합의 작가 순서 (조합마다 순서를 섞었으면 조합 것, 아니면 회차 것)
+const namesOf = (run, combo) => combo.names || run.names;
 const runById = (id) => S.runs.find((r) => r.id === id);
 const currentRun = () => runById(S.currentRunId);
 
@@ -353,7 +359,7 @@ function startRun() {
   const locked = arts.map((a) => Boolean(S.locks[a.name]));
   const names = arts.map((a) => a.name);
   const [width, height] = SIZES[st.size] || [832, 1216];
-  const n = Math.max(1, Math.min(20, Math.round(st.combos)));
+  const n = Math.max(1, Math.round(st.combos) || 1);
   const k = Math.max(1, Math.min(10, Math.round(st.perCombo)));
   const fixed = Number.parseInt(String(st.fixedSeed).trim(), 10);
   const sharedSeeds = Array.from({ length: k }, (_, i) => (st.seedMode === 'fixed' && Number.isFinite(fixed) ? (fixed + i) : randomSeed()));
@@ -363,21 +369,30 @@ function startRun() {
     if (!w) { toast('잠근 작가 때문에 평균을 맞출 수 없어요. 범위를 넓혀 주세요.', 'bad'); return; }
     S.counter++;
     const seeds = st.seedMode === 'diff' ? Array.from({ length: k }, randomSeed) : sharedSeeds;
-    combos.push({ no: S.counter, weights: w, prompt: build(segs, w, { space: st.space }), images: seeds.map((seed) => ({ seed, status: 'wait', id: null, error: '' })) });
+    const images = seeds.map((seed) => ({ seed, status: 'wait', id: null, error: '' }));
+    if (st.shuffleOrder) {
+      const order = shuffledOrder(names.length);
+      const cw = order.map((i) => w[i]);
+      combos.push({ no: S.counter, names: order.map((i) => names[i]), weights: cw, prompt: build(reorder(segs, order), cw, { space: st.space }), images });
+    } else {
+      combos.push({ no: S.counter, weights: w, prompt: build(segs, w, { space: st.space }), images });
+    }
   }
   store.kvSet('counter', S.counter).catch(() => {});
   const run = {
     id: `r${Date.now()}`, created: Date.now(), names, combos,
-    mode: st.mode, seedMode: st.seedMode,
+    mode: st.mode, seedMode: st.seedMode, shuffleOrder: Boolean(st.shuffleOrder),
     params: { negative: st.negative, charPrompt: st.charPrompt, charNegative: st.charNegative, model: st.model, width, height, steps: st.steps, cfg: st.cfg, rescale: st.rescale, sampler: st.sampler },
   };
   S.runs.unshift(run);
   S.currentRunId = run.id;
   S.tab = 0;
+  S.detail = false;
   S.view = 'result';
   const list = [];
   combos.forEach((c, ci) => c.images.forEach((_, ii) => list.push([ci, ii])));
   enqueue(run, list);
+  window.scrollTo(0, 0);
 }
 
 function moreImages(run, ci) {
@@ -402,25 +417,79 @@ function toggleFav(run, combo) {
     S.favs = S.favs.filter((x) => x !== f);
     toast(`조합 ${combo.no}을 즐겨찾기에서 뺐어요`);
   } else {
-    S.favs.unshift({ id: `f${Date.now()}`, src: favKey(run, combo), name: `조합 ${combo.no}`, note: '', pick: false, w: Object.fromEntries(run.names.map((n, i) => [n, combo.weights[i]])) });
+    S.favs.unshift({ id: `f${Date.now()}`, src: favKey(run, combo), name: `조합 ${combo.no}`, note: '', pick: false, order: namesOf(run, combo).slice(), w: Object.fromEntries(namesOf(run, combo).map((n, i) => [n, combo.weights[i]])) });
     toast(`조합 ${combo.no}을 즐겨찾기에 넣었어요`, 'ok');
   }
   saveFavs();
   renderAll();
 }
 
-function weightsFromMap(map) {
-  const arts = artists(segsNow());
+function weightsFromMap(map, segs = segsNow()) {
+  const arts = artists(segs);
   return arts.map((a) => (typeof map[a.name] === 'number' ? map[a.name] : a.w));
 }
 
-function useAsBase(map, label) {
-  const segs = segsNow();
-  S.settings.prompt = build(segs, weightsFromMap(map), { space: S.settings.space });
+function useAsBase(map, label, order) {
+  let segs = segsNow();
+  if (order && order.length) segs = reorder(segs, orderByNames(artists(segs), order));
+  S.settings.prompt = build(segs, weightsFromMap.call(null, map, segs), { space: S.settings.space });
   saveSettings();
   S.view = 'make';
   renderAll();
-  toast(`${label} 가중치를 프롬프트에 넣었어요`, 'ok');
+  toast(`${label}의 가중치${order ? '와 순서' : ''}를 프롬프트에 넣었어요`, 'ok');
+}
+
+// ---------------------------------------------------------------- 작가 순서
+function setPromptSegs(segs) {
+  S.settings.prompt = build(segs, artists(segs).map((a) => a.w), { space: S.settings.space });
+  saveSettings();
+  const ta = document.getElementById('in-prompt');
+  if (ta) ta.value = S.settings.prompt;
+  const box = document.getElementById('artist-list');
+  if (box) renderArtistList(box);
+}
+function moveArtist(i, d) {
+  const segs = segsNow();
+  const n = artists(segs).length;
+  const j = i + d;
+  if (j < 0 || j >= n) return;
+  const order = Array.from({ length: n }, (_, x) => x);
+  [order[i], order[j]] = [order[j], order[i]];
+  setPromptSegs(reorder(segs, order));
+}
+function shuffleOrderNow() {
+  const segs = segsNow();
+  const n = artists(segs).length;
+  if (n < 2) return;
+  setPromptSegs(reorder(segs, shuffledOrder(n)));
+  toast('작가 순서를 섞었어요', 'ok');
+}
+function saveOrder(name) {
+  const arts = artists(segsNow());
+  if (!arts.length) return;
+  const label = name.trim() || `순서 ${S.orders.length + 1}`;
+  S.orders.unshift({ id: `o${Date.now()}`, name: label, names: arts.map((a) => a.name) });
+  saveOrders();
+  renderOrders();
+  toast(`"${label}" 순서를 저장했어요`, 'ok');
+}
+function loadOrder(o) {
+  const segs = segsNow();
+  setPromptSegs(reorder(segs, orderByNames(artists(segs), o.names)));
+  toast(`"${o.name}" 순서로 바꿨어요`, 'ok');
+}
+function renderOrders() {
+  const box = document.getElementById('order-list');
+  if (!box) return;
+  box.innerHTML = '';
+  if (!S.orders.length) { box.append(h('p', { class: 'empty' }, '저장한 순서가 없어요.')); return; }
+  for (const o of S.orders) {
+    box.append(h('div', { class: 'order-row' },
+      h('span', { class: 'order-name' }, o.name, h('span', { class: 'muted small' }, ` · ${o.names.length}명`)),
+      h('div', { class: 'row gap6' },
+        h('button', { class: 'btn small', onclick: () => loadOrder(o) }, '불러오기'),
+        confirmBtn('삭제', '한 번 더', () => { S.orders = S.orders.filter((x) => x !== o); saveOrders(); renderOrders(); }))));
+  }
 }
 
 // 받침에 따라 을/를
@@ -552,12 +621,15 @@ function renderArtistList(box) {
   const summary = document.getElementById('artist-summary');
   if (summary) summary.textContent = arts.length ? `작가 ${arts.length}명 · 평균 ${avg.toFixed(2)}${locked ? ` · 고정 ${locked}` : ''}` : '작가 태그 없음';
   if (!arts.length) { box.append(h('p', { class: 'empty' }, '프롬프트에서 artist: 태그를 찾지 못했어요. "artist:이름" 형식으로 넣어 주세요.')); return; }
-  for (const a of arts) {
+  arts.forEach((a, i) => {
     const on = Boolean(S.locks[a.name]);
-    box.append(h('button', { type: 'button', class: `artist${on ? ' locked' : ''}`, 'aria-pressed': on ? 'true' : 'false',
-      onclick: () => { if (S.locks[a.name]) delete S.locks[a.name]; else S.locks[a.name] = true; saveLocks(); renderArtistList(box); } },
-    h('span', { class: 'artist-lock' }, on ? '고정' : ''), h('span', { class: 'artist-name' }, a.name), h('span', { class: 'artist-w' }, fmt(a.w))));
-  }
+    box.append(h('div', { class: `artist${on ? ' locked' : ''}` },
+      h('button', { type: 'button', class: 'artist-main', 'aria-pressed': on ? 'true' : 'false',
+        onclick: () => { if (S.locks[a.name]) delete S.locks[a.name]; else S.locks[a.name] = true; saveLocks(); renderArtistList(box); } },
+      h('span', { class: 'artist-no' }, `${i + 1}`), h('span', { class: 'artist-lock' }, on ? '고정' : ''), h('span', { class: 'artist-name' }, a.name), h('span', { class: 'artist-w' }, fmt(a.w))),
+      h('button', { type: 'button', class: 'mv', 'aria-label': `${a.name} 위로`, disabled: i === 0, onclick: () => moveArtist(i, -1) }, '▲'),
+      h('button', { type: 'button', class: 'mv', 'aria-label': `${a.name} 아래로`, disabled: i === arts.length - 1, onclick: () => moveArtist(i, 1) }, '▼')));
+  });
 }
 
 function renderShuffleHint() {
@@ -579,7 +651,7 @@ function renderShuffleHint() {
 function renderMakeButton() {
   const b = document.getElementById('make-btn');
   if (!b) return;
-  const n = Math.max(1, Math.min(20, Math.round(S.settings.combos || 1)));
+  const n = Math.max(1, Math.round(S.settings.combos) || 1);
   const k = Math.max(1, Math.min(10, Math.round(S.settings.perCombo || 1)));
   b.textContent = Q.busy ? `뽑는 중 ${Q.done}/${Q.total} · 더 쌓기: ${n}조합 × ${k}장` : `${n}조합 × ${k}장 뽑기 (총 ${n * k}장)`;
 }
@@ -594,7 +666,7 @@ function favCard(f) {
       h('label', { class: 'check' }, h('input', { type: 'checkbox', id: `pick-${f.id}`, checked: f.pick, onchange: (e) => { f.pick = e.target.checked; saveFavs(); renderShuffleHint(); } }), h('b', {}, f.name), h('span', { class: 'muted small' }, '기준')),
       h('div', { class: 'row gap6' },
         h('button', { class: 'btn small', onclick: () => copy(artistLine(names, ws, S.settings.space), '작가 블록') }, '복사'),
-        h('button', { class: 'btn small', onclick: () => useAsBase(f.w, f.name) }, '프롬프트에 넣기'),
+        h('button', { class: 'btn small', onclick: () => useAsBase(f.w, f.name, f.order) }, '프롬프트에 넣기'),
         confirmBtn('삭제', '한 번 더', () => { S.favs = S.favs.filter((x) => x !== f); saveFavs(); renderAll(); }))),
     note,
     h('div', { class: 'top small' }, '주도 ', topArtists(names, ws).map(([w, n], i) => [i ? ' · ' : '', h('b', {}, n), ` ${fmt(w)}`])));
@@ -602,7 +674,8 @@ function favCard(f) {
 
 function viewMake() {
   const st = S.settings;
-  const artistBox = h('div', { class: 'artists' });
+  const artistBox = h('div', { class: 'artists', id: 'artist-list' });
+  const orderName = h('input', { type: 'text', id: 'order-name', placeholder: '순서 이름 (예: 4번 순서)' });
   const makeBtn = h('button', { id: 'make-btn', class: 'btn primary wide', onclick: startRun });
   const v = h('div', { class: 'view' },
     h('section', { class: 'card' },
@@ -614,8 +687,12 @@ function viewMake() {
         area('charPrompt', 4, '장면·캐릭터 태그 (비워도 돼요)'), area('charNegative', 3, '캐릭터 네거티브'))),
     h('section', { class: 'card' },
       h('div', { class: 'row between' }, h('h2', {}, '작가'), h('span', { id: 'artist-summary', class: 'muted small' })),
-      h('p', { class: 'muted small' }, '눌러서 고정하면 그 작가의 가중치는 바뀌지 않아요.'),
-      artistBox),
+      h('p', { class: 'muted small' }, '이름을 눌러 고정하면 가중치가 바뀌지 않아요. ▲▼로 순서를 바꾸면 프롬프트의 작가 순서도 같이 바뀌어요.'),
+      h('div', { class: 'row wrap gap6' }, h('button', { class: 'btn small', onclick: shuffleOrderNow }, '순서 섞기')),
+      artistBox,
+      h('details', {}, h('summary', {}, '순서 저장 · 불러오기'),
+        h('div', { class: 'row gap6' }, orderName, h('button', { class: 'btn small', style: 'flex:0 0 auto', onclick: () => { saveOrder(orderName.value); orderName.value = ''; } }, '지금 순서 저장')),
+        h('div', { id: 'order-list', class: 'order-list' }))),
     h('section', { class: 'card' },
       h('h2', {}, '섞기'),
       h('div', { class: 'grid' },
@@ -624,8 +701,9 @@ function viewMake() {
         field('최소', num('min', { step: 0.1, min: 0, max: 3 })),
         field('최대', num('max', { step: 0.1, min: 0.1, max: 3 })),
         h('div', { id: 'jitter-field' }, field('흔들 폭 ±', num('jitter', { step: 0.05, min: 0.05, max: 1.5 }))),
-        field('조합 수', num('combos', { step: 1, min: 1, max: 20, int: true })),
+        field('조합 수', num('combos', { step: 1, min: 1, int: true })),
         field('조합당 장수', num('perCombo', { step: 1, min: 1, max: 10, int: true })),
+        h('label', { class: 'check span2' }, h('input', { type: 'checkbox', id: 'in-shuffleOrder', checked: st.shuffleOrder, onchange: (e) => { S.settings.shuffleOrder = e.target.checked; saveSettings(); } }), h('span', {}, '조합마다 작가 순서도 섞기')),
         field('시드', select('seedMode', [['same', '조합끼리 같은 시드'], ['diff', '매번 다른 시드'], ['fixed', '시드 직접 지정']], renderShuffleHint)),
         h('div', { id: 'fixed-field' }, field('시작 시드', h('input', { type: 'number', id: 'in-fixedSeed', inputmode: 'numeric', value: st.fixedSeed, oninput: (e) => { S.settings.fixedSeed = e.target.value; saveSettings(); } }), '장마다 1씩 늘려요'))),
       h('p', { id: 'shuffle-hint', class: 'hint' }),
@@ -635,7 +713,7 @@ function viewMake() {
       h('p', { class: 'muted small' }, '"기준"을 체크한 즐겨찾기들의 평균이 "기준에서 흔들기"의 출발점이 돼요.'),
       S.favs.length ? S.favs.map(favCard) : h('p', { class: 'empty' }, '결과에서 ☆를 누르면 여기에 모여요.')),
     h('div', { class: 'sticky-go' }, makeBtn));
-  setTimeout(() => { renderArtistList(artistBox); renderShuffleHint(); renderMakeButton(); }, 0);
+  setTimeout(() => { renderArtistList(artistBox); renderOrders(); renderShuffleHint(); renderMakeButton(); }, 0);
   return v;
 }
 
@@ -659,9 +737,16 @@ function cellContent(run, ci, ii) {
 }
 
 function updateCell(run, ci, ii) {
+  if (S.view === 'result' && !S.detail && run.id === S.currentRunId) { refreshGallery(); return; }
   const el = cellEls.get(`${run.id}:${ci}:${ii}`);
   if (el && el.isConnected) el.replaceWith(registerCell(run, ci, ii));
   updateTabs(run);
+}
+// 갤러리는 여러 그림이 한꺼번에 들어올 수 있어 한 번에 몰아서 다시 그린다.
+let galleryTimer = null;
+function refreshGallery() {
+  if (galleryTimer) return;
+  galleryTimer = setTimeout(() => { galleryTimer = null; if (S.view === 'result' && !S.detail && !V.open) renderView(); }, 120);
 }
 function registerCell(run, ci, ii) {
   const el = cellContent(run, ci, ii);
@@ -690,10 +775,49 @@ function setTab(i) {
   document.getElementById('tabs')?.children[S.tab]?.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
 }
 
+function runHead(run, extra) {
+  return h('div', { class: 'run-head' },
+    h('div', {}, h('b', {}, when(run.created)), h('span', { class: 'muted small' }, ` · ${run.combos.length}조합 · ${run.mode === 'vary' ? '기준에서 흔들기' : '완전 무작위'} · ${{ same: '같은 시드', diff: '다른 시드', fixed: '지정 시드' }[run.seedMode] || ''}${run.shuffleOrder ? ' · 순서도 섞음' : ''}`)),
+    extra);
+}
+
+function backToGallery() {
+  S.detail = false;
+  renderView();
+  window.scrollTo(0, S.galleryY || 0);
+}
+
+function viewGallery(run) {
+  const cols = S.settings.gcols || 2;
+  const cards = run.combos.map((c, i) => {
+    const im = c.images.find((x) => x.status === 'done');
+    const state = tabState(c);
+    const done = c.images.filter((x) => x.status === 'done').length;
+    const pic = h('div', { class: `g-pic ${state}`, style: `aspect-ratio:${run.params.width}/${run.params.height}` });
+    if (im) {
+      const img = h('img', { alt: `조합 ${c.no} 대표 그림`, loading: 'lazy' });
+      urlFor(im.id).then((u) => { if (u) img.src = u; });
+      pic.append(img);
+    } else {
+      pic.append(state === 'run' ? h('div', { class: 'spinner' }) : null, h('span', { class: 'cell-label' }, { run: '생성 중', wait: '대기', fail: '실패', done: '중단' }[state]));
+    }
+    const top = topArtists(namesOf(run, c), c.weights, 2);
+    return h('button', { class: 'g-card', onclick: () => { S.galleryY = window.scrollY; S.tab = i; S.detail = true; renderView(); window.scrollTo(0, 0); } },
+      pic,
+      h('span', { class: 'g-cap' }, h('b', {}, `${c.no}`), favOf(run, c) ? h('span', { class: 'g-star' }, '★') : null, h('span', { class: 'muted' }, ` ${done}/${c.images.length}`)),
+      h('span', { class: 'g-top' }, top.map(([w, n]) => `${n} ${fmt(w)}`).join(' · ')));
+  });
+  return h('div', { class: 'view' },
+    runHead(run, h('div', { class: 'seg', role: 'group', 'aria-label': '한 줄에 보일 조합 수' }, [2, 3, 4].map((n) => h('button', { class: `seg-b${cols === n ? ' on' : ''}`, onclick: () => { S.settings.gcols = n; saveSettings(); renderView(); } }, `${n}`)))),
+    h('p', { class: 'muted small' }, '조합마다 첫 그림을 보여 줘요. 누르면 그 조합의 그림을 모두 볼 수 있어요.'),
+    h('div', { class: `gallery g${cols}` }, cards));
+}
+
 function viewResult() {
   const run = currentRun();
-  if (!run) return h('div', { class: 'view' }, h('section', { class: 'card' }, h('h2', {}, '아직 뽑은 조합이 없어요'), h('p', { class: 'muted' }, '뽑기 탭에서 조합을 뽑으면 여기에 조합마다 탭으로 나뉘어 나와요.'), h('button', { class: 'btn primary', onclick: () => { S.view = 'make'; renderAll(); } }, '뽑기로 가기')));
+  if (!run) return h('div', { class: 'view' }, h('section', { class: 'card' }, h('h2', {}, '아직 뽑은 조합이 없어요'), h('p', { class: 'muted' }, '뽑기 탭에서 조합을 뽑으면 여기에 조합마다 대표 그림이 나와요.'), h('button', { class: 'btn primary', onclick: () => { S.view = 'make'; renderAll(); } }, '뽑기로 가기')));
   if (S.tab >= run.combos.length) S.tab = 0;
+  if (!S.detail) return viewGallery(run);
   const combo = run.combos[S.tab];
   const ci = S.tab;
   const tabs = h('div', { id: 'tabs', class: 'tabs', 'data-run': run.id, role: 'tablist' },
@@ -710,18 +834,18 @@ function viewResult() {
     h('div', { class: 'row gap6' },
       h('button', { class: `btn small${fav ? ' star' : ''}`, onclick: () => toggleFav(run, combo), 'aria-pressed': fav ? 'true' : 'false' }, fav ? '★ 즐겨찾기' : '☆ 즐겨찾기'),
       h('div', { class: 'seg', role: 'group', 'aria-label': '한 줄에 보일 그림 수' }, [1, 2, 3].map((n) => h('button', { class: `seg-b${cols === n ? ' on' : ''}`, onclick: () => { S.settings.cols = n; saveSettings(); renderView(); } }, `${n}`))))),
-  h('div', { class: 'top small' }, '주도 ', topArtists(run.names, combo.weights).map(([w, n], i) => [i ? ' · ' : '', h('b', {}, n), ` ${fmt(w)}`])),
+  h('div', { class: 'top small' }, '주도 ', topArtists(namesOf(run, combo), combo.weights).map(([w, n], i) => [i ? ' · ' : '', h('b', {}, n), ` ${fmt(w)}`])),
   grid,
   h('div', { class: 'row wrap gap6' },
     h('button', { class: 'btn', onclick: () => copy(combo.prompt, '프롬프트') }, '프롬프트 복사'),
-    h('button', { class: 'btn', onclick: () => copy(artistLine(run.names, combo.weights, S.settings.space), '작가 블록') }, '작가만 복사'),
-    h('button', { class: 'btn', onclick: () => useAsBase(Object.fromEntries(run.names.map((n, i) => [n, combo.weights[i]])), `조합 ${combo.no}`) }, '프롬프트에 넣기'),
+    h('button', { class: 'btn', onclick: () => copy(artistLine(namesOf(run, combo), combo.weights, S.settings.space), '작가 블록') }, '작가만 복사'),
+    h('button', { class: 'btn', onclick: () => useAsBase(Object.fromEntries(namesOf(run, combo).map((n, i) => [n, combo.weights[i]])), `조합 ${combo.no}`, combo.names) }, '프롬프트에 넣기'),
     h('button', { class: 'btn', onclick: () => moreImages(run, ci) }, `${Math.round(S.settings.perCombo)}장 더 뽑기`)),
   h('details', { class: 'weights' }, h('summary', {}, '가중치 전체 보기'),
-    h('pre', {}, run.names.map((n, i) => `${fmt(combo.weights[i])}  ${n}`).join('\n'))));
+    h('pre', {}, namesOf(run, combo).map((n, i) => `${i + 1}. ${fmt(combo.weights[i])}  ${n}`).join('\n'))));
   return h('div', { class: 'view' },
-    h('div', { class: 'run-head' },
-      h('div', {}, h('b', {}, when(run.created)), h('span', { class: 'muted small' }, ` · ${run.combos.length}조합 · ${run.mode === 'vary' ? '기준에서 흔들기' : '완전 무작위'} · ${{ same: '같은 시드', diff: '다른 시드', fixed: '지정 시드' }[run.seedMode] || ''}`)),
+    h('div', { class: 'row between' },
+      h('button', { class: 'btn small', onclick: backToGallery }, '← 전체 보기'),
       h('span', { class: 'muted small' }, '옆으로 밀어 조합 넘기기')),
     tabs, panel);
 }
@@ -744,7 +868,7 @@ function viewHistory() {
       h('div', { class: 'row between' },
         h('div', {}, h('b', {}, when(run.created)), h('span', { class: 'muted small' }, ` · ${run.combos.length}조합 · ${done}/${total}장`)),
         h('div', { class: 'row gap6' },
-          h('button', { class: 'btn small', onclick: () => { S.currentRunId = run.id; S.tab = 0; S.view = 'result'; renderAll(); } }, '열기'),
+          h('button', { class: 'btn small', onclick: () => { S.currentRunId = run.id; S.tab = 0; S.detail = false; S.view = 'result'; renderAll(); } }, '열기'),
           confirmBtn('삭제', '한 번 더', () => deleteRun(run)))),
       h('div', { class: 'muted small' }, `조합 ${run.combos.map((c) => c.no).join(', ')}`),
       thumbs));
@@ -862,7 +986,7 @@ function renderNav() {
   nav.innerHTML = '';
   for (const [id, label] of VIEWS) {
     nav.append(h('button', { class: `nav-b${S.view === id ? ' on' : ''}`, 'aria-current': S.view === id ? 'page' : null,
-      onclick: () => { const same = S.view === id; S.view = id; renderAll(); if (!same) window.scrollTo(0, 0); } }, label,
+      onclick: () => { const same = S.view === id; if (same && id === 'result') S.detail = false; S.view = id; renderAll(); if (!same) window.scrollTo(0, 0); } }, label,
     id === 'result' && Q.busy ? h('span', { class: 'nav-dot' }) : null));
   }
 }
@@ -875,6 +999,7 @@ function renderAll() {
 
 onBackButton(() => {
   if (V.open) { closeViewer(); return; }
+  if (S.view === 'result' && S.detail) { backToGallery(); return; }
   if (S.view !== 'make') { S.view = 'make'; renderAll(); return; }
   minimizeApp();
 });

@@ -57,9 +57,11 @@ export const DEFAULT_SETTINGS = {
   combos: 5,
   perCombo: 3,
   seedMode: 'same',
+  shuffleOrder: false,
   fixedSeed: '',
   space: true,
   cols: 2,
+  gcols: 2,
 };
 
 const W = (pairs) => Object.fromEntries(pairs);
