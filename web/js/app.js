@@ -607,6 +607,7 @@ function rateCombo(run, combo, rate) {
       id: `f${Date.now()}`, src: favKey(run, combo), name: comboTitle(combo), note: S.meta[favKey(run, combo)]?.note || '', pick: false, rate,
       order: names.slice(), w: Object.fromEntries(names.map((n, i) => [n, combo.weights[i]])),
       imgs: doneImgs(combo), ratio: [run.params.width, run.params.height], created: Date.now(), kind: combo.kind || 'random',
+      prompt: combo.prompt, negative: run.params.negative,
     });
     toast(`조합 ${combo.no} → ${label}`, 'ok');
   }
@@ -857,7 +858,7 @@ async function renderViewer() {
       h('button', { class: 'btn nav-arrow', onclick: () => viewerStep(-1), 'aria-label': '이전' }, '‹'),
       h('button', { class: 'btn', onclick: () => saveImage(it.no, im, it.created) }, '저장'),
       h('button', { class: 'btn', onclick: () => shareImage(it.no, im) }, '공유'),
-      h('button', { class: 'btn', onclick: () => copy(String(im.seed), '시드') }, '시드'),
+      h('button', { class: 'btn', onclick: () => openCopyMenu({ ...(it.run ? copyDataOf(favKey(it.run, it.combo)) : (it.fav.src && styleOf(it.fav.src) ? copyDataOf(it.fav.src) : copyDataOfFav(it.fav))), seed: im.seed }) }, '복사'),
       h('button', { class: 'btn nav-arrow', onclick: () => viewerStep(1), 'aria-label': '다음' }, '›')),
   );
 }
@@ -1115,8 +1116,7 @@ function viewResult() {
   h('div', { class: 'top small' }, '주도 ', topArtists(namesOf(run, combo), combo.weights).map(([w, n], i) => [i ? ' · ' : '', h('b', {}, n), ` ${fmt(w)}`])),
   grid,
   h('div', { class: 'row wrap gap6' },
-    h('button', { class: 'btn', onclick: () => copy(combo.prompt, '프롬프트') }, '프롬프트 복사'),
-    h('button', { class: 'btn', onclick: () => copy(artistLine(namesOf(run, combo), combo.weights, S.settings.space), '작가 블록') }, '작가만 복사'),
+    h('button', { class: 'btn', onclick: () => openCopyMenu(copyDataOf(favKey(run, combo))) }, '복사'),
     h('button', { class: 'btn', onclick: () => useAsBase(Object.fromEntries(namesOf(run, combo).map((n, i) => [n, combo.weights[i]])), `조합 ${combo.no}`, combo.names) }, '프롬프트에 넣기'),
     h('button', { class: 'btn', onclick: () => moreImages(run, ci) }, `${Math.round(S.settings.perCombo)}장 더 뽑기`)),
   h('details', { class: 'weights' }, h('summary', {}, '가중치 전체 보기'),
@@ -1178,6 +1178,8 @@ async function deleteRun(run) {
     if (t && t.run === run) {
       f.imgs = doneImgs(t.combo);
       f.ratio = [run.params.width, run.params.height];
+      f.prompt = t.combo.prompt;
+      f.negative = run.params.negative;
       f.created = f.created || run.created;
       for (const im of f.imgs) keep.add(im.id);
     }
@@ -1219,7 +1221,7 @@ function favCard(f, list, idx) {
     h('div', { class: 'row wrap gap6' },
       t ? h('button', { class: 'btn small', onclick: () => { S.currentRunId = t.run.id; S.tab = t.ci; S.detail = true; S.view = 'result'; renderAll(); window.scrollTo(0, 0); } }, '결과에서 보기') : null,
       names.length ? h('button', { class: 'btn small', onclick: () => useAsBase(f.w, f.name, f.order) }, '프롬프트에 넣기') : null,
-      names.length ? h('button', { class: 'btn small', onclick: () => copy(artistLine(names, ws, S.settings.space), '작가 블록') }, '작가만 복사') : null));
+      names.length ? h('button', { class: 'btn small', onclick: () => openCopyMenu(f.src && styleOf(f.src) ? copyDataOf(f.src) : copyDataOfFav(f)) }, '복사') : null));
 }
 
 function viewFavs() {
@@ -1646,7 +1648,7 @@ function renderSheet() {
         h('button', { class: `btn small${merge.b === s.src ? ' on-b' : ''}`, onclick: () => setMergeSlot('b', s.src) }, '합치기 B로'),
         s.run ? h('button', { class: 'btn small', onclick: () => { closeSheet(); S.currentRunId = s.run.id; S.tab = s.ci; S.detail = true; S.view = 'result'; renderAll(); window.scrollTo(0, 0); } }, '결과에서 보기') : null,
         h('button', { class: 'btn small', onclick: () => { closeSheet(); useAsBase(weightMap(s), s.title, s.names); } }, '프롬프트에 넣기'),
-        h('button', { class: 'btn small', onclick: () => copy(artistLine(s.names, s.weights, S.settings.space), '작가 블록') }, '작가만 복사'))));
+        h('button', { class: 'btn small', onclick: () => openCopyMenu(copyDataOf(s.src)) }, '복사'))));
 }
 
 // ---------------------------------------------------------------- 합치기
@@ -1817,6 +1819,7 @@ function cupSide(cup, src, side) {
   return h('div', { class: `cupfs-side s${side}` },
     pic,
     h('div', { class: 'cupfs-name' }, h('span', { class: `cupfs-tag t${side}` }, tag), s.title, n > 1 ? h('span', { class: 'cupfs-count' }, ` ${i + 1}/${n}`) : null),
+    h('button', { class: 'cupfs-copy', onclick: (e) => { e.stopPropagation(); openCopyMenu({ ...copyDataOf(src), seed: s.imgs[i].seed }); } }, '복사'),
     n > 1 ? h('button', { class: 'cupfs-flip left', onclick: flip(-1), 'aria-label': '이전 그림' }, '‹') : null,
     n > 1 ? h('button', { class: 'cupfs-flip right', onclick: flip(1), 'aria-label': '다음 그림' }, '›') : null);
 }
@@ -1988,6 +1991,55 @@ function renderAppbar() {
     h('button', { class: `icon-btn${S.view === 'settings' && S.app === 'shuffle' ? ' on' : ''}`, 'aria-label': '설정', onclick: () => { S.app = 'shuffle'; document.documentElement.dataset.app = 'shuffle'; S.view = S.view === 'settings' ? 'make' : 'settings'; renderAll(); window.scrollTo(0, 0); } }, '⚙'));
 }
 
+// ---------------------------------------------------------------- 복사 메뉴: 베이스(작가 포함) · 작가만 · 네거티브 따로
+// 베이스 = 그 그림체를 뽑을 때 보낸 베이스 프롬프트 전체(작가 포함). 네거티브 = 그때의 베이스 네거티브.
+function copyDataOf(src) {
+  const s = styleOf(src);
+  if (!s) return null;
+  if (s.run) return { title: s.title, base: s.combo.prompt, artists: artistLine(s.names, s.weights, S.settings.space), negative: s.run.params.negative || '' };
+  return copyDataOfFav(s.fav);
+}
+function copyDataOfFav(f) {
+  const names = f.order && f.order.length ? f.order.filter((n) => n in (f.w || {})) : Object.keys(f.w || {});
+  const ws = names.map((n) => f.w[n]);
+  let base = f.prompt, approx = false;
+  if (!base) {
+    // 예전에 평가해 둔 것(뽑을 때 프롬프트가 남아 있지 않음): 지금 프롬프트에 이 그림체의 가중치·순서를 넣어 만든다.
+    let segs = segsNow();
+    segs = reorder(segs, orderByNames(artists(segs), names));
+    base = build(segs, weightsFromMap(f.w || {}, segs), { space: S.settings.space });
+    approx = true;
+  }
+  return { title: f.name, base, artists: artistLine(names, ws, S.settings.space), negative: f.negative ?? S.settings.negative, approx };
+}
+
+const CM = { open: false, data: null };
+function openCopyMenu(data) {
+  if (!data) { toast('복사할 프롬프트를 찾지 못했어요', 'bad'); return; }
+  CM.open = true;
+  CM.data = data;
+  renderCopyMenu();
+}
+function closeCopyMenu() { CM.open = false; renderCopyMenu(); }
+function renderCopyMenu() {
+  const root = document.getElementById('copymenu');
+  root.innerHTML = '';
+  root.hidden = !CM.open;
+  if (!CM.open) return;
+  const d = CM.data;
+  const item = (label, text, what) => h('button', { class: 'copy-item', onclick: () => { copy(text, what); closeCopyMenu(); } },
+    h('b', {}, label), h('span', { class: 'copy-preview' }, String(text).replace(/\s+/g, ' ').slice(0, 90) || '(비어 있음)'));
+  root.append(
+    h('div', { class: 'sheet-back', onclick: closeCopyMenu }),
+    h('div', { class: 'copy-panel', role: 'dialog', 'aria-label': `${d.title} 복사` },
+      h('div', { class: 'row between' }, h('div', { class: 'sheet-title' }, `${d.title} 복사`), h('button', { class: 'btn small ghost', onclick: closeCopyMenu }, '닫기')),
+      item('베이스 프롬프트 (작가 포함)', d.base, '베이스 프롬프트'),
+      item('작가만', d.artists, '작가 블록'),
+      item('네거티브', d.negative, '네거티브'),
+      d.seed != null ? item('시드', String(d.seed), '시드') : null,
+      d.approx ? h('p', { class: 'muted small' }, '이 그림체는 뽑을 때의 프롬프트가 남아 있지 않아서, 지금 프롬프트에 이 그림체의 작가 가중치·순서를 넣어 만들었어요.') : null));
+}
+
 // ---------------------------------------------------------------- frame
 const VIEWS = [['make', '뽑기'], ['result', '결과'], ['history', '기록'], ['fav', '즐겨찾기'], ['styles', '그림체']];
 
@@ -2043,6 +2095,7 @@ function renderAll() {
 }
 
 onBackButton(() => {
+  if (CM.open) { closeCopyMenu(); return; }
   if (V.open) { closeViewer(); return; }
   if (D.open) { closeDrawer(); return; }
   if (S.view === 'fav' && S.favTab === 'cup' && activeCup() && !S.cupOut) { S.cupOut = true; renderView(); return; }
