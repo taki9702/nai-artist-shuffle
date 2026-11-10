@@ -2,7 +2,7 @@
 import { VERSION, REPO } from './version.js';
 import { DEFAULT_SETTINGS, DEFAULT_FAVS } from './defaults.js';
 import { parse, artists, build, artistLine, shuffleWeights, topArtists, fmt, reorder, orderByNames, shuffledOrder } from './shuffle.js';
-import { MODELS, SAMPLERS, SIZES, RETRY_STATUSES, RETRY_DELAYS, AUTH_STATUSES, generateImage, fetchSubscription, randomSeed, buildPayload } from './nai.js';
+import { MODELS, SAMPLERS, SIZES, RETRY_STATUSES, RETRY_DELAYS, AUTH_STATUSES, generateImage, fetchSubscription, randomSeed, buildPayload, isFreeForOpus, IMAGES_PER_PERCENT } from './nai.js';
 import * as store from './store.js';
 import {
   native, Filesystem, toBase64, http, copyToClipboard, openExternal, downloadBlob, onBackButton, minimizeApp,
@@ -225,6 +225,8 @@ async function syncNative() {
       if (fatal) toast(fatal, 'bad');
       else toast('다 뽑았어요', 'ok');
     } else if (fatal) toast(fatal, 'bad');
+    if (wasBusy && !busy) refreshSub();
+    else if (busy && Date.now() - (S.sub?.at || 0) > 120000) refreshSub();
     wasBusy = busy;
     synced = true;
     renderStatus();
@@ -324,6 +326,7 @@ async function processQueue() {
   keepAwake(false);
   backgroundWork(false);
   if (document.hidden) backgroundNotice(stopReason ? '뽑기가 멈췄어요' : '다 뽑았어요', stopReason || `${total}장`);
+  refreshSub();
   if (stopReason) toast(stopReason, 'bad');
   else if (total) toast(`${total}장 다 뽑았어요`, 'ok');
   renderAll();
@@ -777,10 +780,10 @@ function field(label, input, hint) {
 }
 function num(key, { step = 0.1, min, max, int = false } = {}) {
   return h('input', { type: 'number', id: `in-${key}`, inputmode: 'decimal', step, min, max, value: S.settings[key],
-    oninput: (e) => { const v = int ? parseInt(e.target.value, 10) : parseFloat(e.target.value); if (Number.isFinite(v)) { S.settings[key] = v; saveSettings(); renderMakeButton(); renderShuffleHint(); } } });
+    oninput: (e) => { const v = int ? parseInt(e.target.value, 10) : parseFloat(e.target.value); if (Number.isFinite(v)) { S.settings[key] = v; saveSettings(); renderMakeButton(); renderShuffleHint(); renderUsage(); } } });
 }
 function select(key, options, after) {
-  const el = h('select', { id: `in-${key}`, onchange: (e) => { S.settings[key] = e.target.value; saveSettings(); after?.(); } },
+  const el = h('select', { id: `in-${key}`, onchange: (e) => { S.settings[key] = e.target.value; saveSettings(); after?.(); renderUsage(); } },
     options.map(([v, label]) => h('option', { value: v }, label)));
   el.value = S.settings[key];
   return el;
@@ -847,6 +850,7 @@ function viewMake() {
   const orderName = h('input', { type: 'text', id: 'order-name', placeholder: '순서 이름 (예: 4번 순서)' });
   const makeBtn = h('button', { id: 'make-btn', class: 'btn primary wide', onclick: startRun });
   const v = h('div', { class: 'view' },
+    usageCard(),
     h('section', { class: 'card' },
       h('h2', {}, '프롬프트'),
       h('p', { class: 'muted small' }, '베이스 프롬프트 전체를 넣으세요. artist: 태그의 가중치만 바뀌고, 나머지 태그와 순서는 그대로 보내요.'),
@@ -882,7 +886,7 @@ function viewMake() {
       h('p', { id: 'shuffle-hint', class: 'hint' }),
       h('p', { class: 'muted small' }, '"조합끼리 같은 시드"는 모든 조합이 같은 시드 세트를 써서 그림체 차이만 비교돼요. "기준에서 흔들기"의 기준은 즐겨찾기 탭에서 "흔들기 기준"을 체크해 골라요.')),
     h('div', { class: 'sticky-go' }, makeBtn));
-  setTimeout(() => { renderArtistList(artistBox); renderOrders(); renderShuffleHint(); renderMakeButton(); }, 0);
+  setTimeout(() => { renderArtistList(artistBox); renderOrders(); renderShuffleHint(); renderMakeButton(); renderUsage(); }, 0);
   return v;
 }
 
@@ -1230,9 +1234,10 @@ function viewSettings() {
         h('button', { class: 'btn small', onclick: async () => {
           if (!S.settings.apiKey) { toast('키를 먼저 넣어 주세요', 'bad'); return; }
           subBox.textContent = '확인하는 중…';
-          try { S.sub = await fetchSubscription(S.settings.apiKey); subBox.textContent = subText(S.sub); } catch (e) { subBox.textContent = e.message; }
+          try { S.sub = await fetchSubscription(S.settings.apiKey); subBox.textContent = subText(S.sub); renderUsage(); } catch (e) { subBox.textContent = e.message; }
         } }, '구독 확인')),
-      subBox),
+      subBox,
+      usageCard()),
     h('section', { class: 'card' },
       h('h2', {}, '생성 설정'),
       h('div', { class: 'grid' },
@@ -1259,7 +1264,63 @@ function viewSettings() {
       upd,
       h('p', { class: 'muted small', id: 'usage-box' })));
 }
-function subText(s) { return `${s.tier}${s.active ? '' : ' (만료)'} · Anlas ${s.anlas ?? '?'}`; }
+function subText(s) {
+  return `${s.tier}${s.active ? '' : ' (만료)'}${s.usage ? ` · 무료 생성 ${s.usage.percent}% 남음` : ''} · Anlas ${s.anlas ?? '?'}${s.purchased ? ` (구매 ${s.purchased})` : ''}`;
+}
+
+// ---------------------------------------------------------------- Opus 무료 생성 한도
+let subBusy = false, subErr = '';
+async function refreshSub(quiet = true) {
+  if (!S.settings.apiKey || subBusy) return;
+  subBusy = true;
+  renderUsage();
+  try {
+    S.sub = await fetchSubscription(S.settings.apiKey);
+    subErr = '';
+  } catch (e) {
+    subErr = e.message;
+    if (!quiet) toast(e.message, 'bad');
+  } finally {
+    subBusy = false;
+    renderUsage();
+    renderStatus();
+  }
+}
+
+function usageCard() {
+  return h('button', { type: 'button', id: 'usage', class: 'usage', onclick: () => refreshSub(false), 'aria-label': 'Opus 무료 생성 한도 (눌러서 새로고침)' });
+}
+
+function renderUsage() {
+  const st = S.settings;
+  const [width, height] = SIZES[st.size] || [832, 1216];
+  const free = isFreeForOpus({ width, height, steps: st.steps });
+  for (const el of document.querySelectorAll('.usage')) {
+    el.innerHTML = '';
+    if (!st.apiKey) { el.append(h('span', { class: 'usage-sub' }, '설정 탭에서 API 키를 넣으면 무료 생성 한도가 보여요.')); continue; }
+    const s = S.sub;
+    if (!s) { el.append(h('span', { class: 'usage-sub' }, subBusy ? '한도를 불러오는 중…' : (subErr || '눌러서 무료 생성 한도 불러오기'))); continue; }
+    const t = new Date(s.at);
+    const at = `${two(t.getHours())}:${two(t.getMinutes())} 기준`;
+    if (s.usage) {
+      const p = Math.max(0, Math.min(100, s.usage.percent));
+      const level = p <= 10 ? 'low' : p <= 30 ? 'mid' : 'ok';
+      el.append(
+        h('div', { class: 'usage-head' },
+          h('span', { class: 'usage-title' }, 'Opus 무료 생성'),
+          h('span', { class: `usage-pct ${level}` }, `${p}%`, h('span', { class: 'usage-left' }, ' 남음'))),
+        h('div', { class: 'usage-bar' }, h('span', { class: `usage-fill ${level}`, style: `width:${p}%` })),
+        h('div', { class: 'usage-sub' }, `약 ${Math.round(p * IMAGES_PER_PERCENT).toLocaleString('ko-KR')}장 · Anlas ${(s.anlas ?? 0).toLocaleString('ko-KR')} · ${at}${subBusy ? ' · 새로고침 중…' : ''}`),
+        h('div', { class: `usage-note ${free ? '' : 'warn'}` }, free
+          ? (p > 0 ? '지금 설정은 무료 범위예요. 한도를 다 쓰면 그때부터 Anlas가 들어요.' : '무료 한도를 다 썼어요. 지금 뽑으면 Anlas가 들어요.')
+          : '지금 설정(해상도·스텝)은 무료 범위 밖이라 장마다 Anlas가 들어요.'));
+    } else {
+      el.append(
+        h('div', { class: 'usage-head' }, h('span', { class: 'usage-title' }, `${s.tier} · Anlas`), h('span', { class: 'usage-pct ok' }, (s.anlas ?? 0).toLocaleString('ko-KR'))),
+        h('div', { class: 'usage-sub' }, `무료 생성 한도 정보가 없는 구독이에요 · ${at}`));
+    }
+  }
+}
 
 async function checkUpdate(box) {
   box.textContent = '확인하는 중…';
@@ -1289,7 +1350,7 @@ function renderStatus() {
     bar.append(
       h('div', { class: 'status-bar', style: `--p:${Q.total ? (Q.done / Q.total) * 100 : 0}%` }),
       h('div', { class: 'status-row' },
-        h('span', {}, `뽑는 중 ${Q.done}/${Q.total}${wait}`),
+        h('span', {}, `뽑는 중 ${Q.done}/${Q.total}${wait}${S.sub?.usage ? ` · 무료 ${S.sub.usage.percent}%` : ''}`),
         h('button', { class: 'btn small ghost', onclick: () => { if (native) { Gen.genCancel().then(syncNative).catch(() => {}); } else Q.cancel = true; toast('지금 그림까지만 뽑고 멈춰요'); } }, '멈추기')));
   }
   renderMakeButton();
@@ -1303,6 +1364,7 @@ function renderView() {
   main.append(fn());
   window.scrollTo(0, S.view === 'result' || S.view === 'fav' ? y : 0);
   if (S.view === 'result' && S.detail) centerActiveTab();
+  renderUsage();
   if (S.view === 'settings') store.usage().then((u) => { const el = document.getElementById('usage-box'); if (el && u != null) el.textContent = `폰에 저장된 그림·기록: 약 ${(u / 1048576).toFixed(0)}MB`; });
 }
 
@@ -1337,6 +1399,8 @@ document.addEventListener('keydown', (e) => {
 
 (async () => {
   styleStatusBar();
+  // 테스트용: 브라우저 미리보기에서 ?mock 이면 가짜 그림·가짜 구독 정보를 쓴다.
+  if (!native && /[?&]mock\b/.test(location.search)) window.__mock = true;
   try {
     await load();
   } catch (e) {
@@ -1345,6 +1409,8 @@ document.addEventListener('keydown', (e) => {
   document.getElementById('boot')?.remove();
   renderAll();
   startNativeSync();
+  refreshSub();
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && Date.now() - (S.sub?.at || 0) > 60000) refreshSub(); });
   // 테스트용: 브라우저 미리보기에서 ?mock 이면 가짜 그림을 만든다.
-  if (!native && /[?&]mock\b/.test(location.search)) window.__mock = true;
+
 })();

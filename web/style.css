@@ -259,3 +259,22 @@ body.viewer-open .toast { bottom: auto; top: calc(96px + env(safe-area-inset-top
 .combo-title .kind { font-size: 14px; }
 .btn.primary-ish { background: linear-gradient(90deg, var(--accent), var(--accent2)); border: 0; color: #fff; font-weight: 800; }
 #stats-fields { gap: 12px; }
+
+/* Opus 무료 생성 한도 */
+.usage { display: flex; flex-direction: column; gap: 8px; width: 100%; text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }
+.usage-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.usage-title { font-size: 16px; font-weight: 700; color: var(--muted); }
+.usage-pct { font-size: 30px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+.usage-left { font-size: 16px; font-weight: 700; color: var(--muted); }
+.usage-pct.ok { color: var(--like); }
+.usage-pct.mid { color: #ffa94d; }
+.usage-pct.low { color: var(--hate); }
+.usage-bar { height: 12px; border-radius: 6px; background: var(--panel2); overflow: hidden; }
+.usage-fill { display: block; height: 100%; border-radius: 6px; }
+.usage-fill.ok { background: var(--like); }
+.usage-fill.mid { background: #ffa94d; }
+.usage-fill.low { background: var(--hate); }
+.usage-sub { font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.usage-note { font-size: 14px; color: var(--muted); }
+.usage-note.warn { color: #ffa94d; font-weight: 700; }
+.card .usage { background: var(--panel2); }

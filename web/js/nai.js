@@ -85,6 +85,7 @@ export async function generateImage(params, seed) {
 }
 
 export async function fetchSubscription(apiKey) {
+  if (globalThis.__mock) return { tier: 'Opus', tierNum: 3, active: true, anlas: 9930, fixed: 9898, purchased: 32, usage: { percent: 80, negative: false }, at: Date.now() };
   let res;
   try {
     res = await http({ url: NAI_SUB_URL, method: 'GET', headers: naiHeaders(apiKey), responseType: 'json', timeout: 10000 });
@@ -98,10 +99,18 @@ export async function fetchSubscription(apiKey) {
   let anlas = null;
   const s = data.trainingStepsLeft;
   if (s && Number.isInteger(s.fixedTrainingStepsLeft) && Number.isInteger(s.purchasedTrainingSteps)) anlas = s.fixedTrainingStepsLeft + s.purchasedTrainingSteps;
-  return { tier, tierNum: data.tier, active: Boolean(data.active), anlas };
+  // Opus 무료 생성 한도(배터리): usage.percent = 남은 %. 다 쓰면 그때부터 Anlas가 든다.
+  const u = data.usage;
+  const usage = u && typeof u.percent === 'number' ? { percent: u.percent, negative: Boolean(u.isNegative) } : null;
+  const fixed = Number.isInteger(s?.fixedTrainingStepsLeft) ? s.fixedTrainingStepsLeft : null;
+  const purchased = Number.isInteger(s?.purchasedTrainingSteps) ? s.purchasedTrainingSteps : null;
+  return { tier, tierNum: data.tier, active: Boolean(data.active), anlas, fixed, purchased, usage, at: Date.now() };
 }
 
 // Opus는 1MP 이하·28스텝 이하·1장이면 Anlas가 들지 않는다.
+// NovelAI 화면 기준 1%는 약 17.3장(80% ≈ 1384장, 14.3% ≈ 247장). 해상도에 따라 다를 수 있어 '약'으로만 보여 준다.
+export const IMAGES_PER_PERCENT = 17.3;
+
 export function isFreeForOpus({ width, height, steps }) {
   return width * height <= 1024 * 1024 && steps <= 28;
 }
