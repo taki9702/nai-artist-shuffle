@@ -74,6 +74,7 @@ const S = {
   runs: [],
   currentRunId: null,
   tab: 0,
+  favTab: 'like',
   detail: false,  // 결과 탭: false = 갤러리(조합마다 대표 그림), true = 조합 하나 크게
   sub: null,
 };
@@ -332,7 +333,7 @@ async function processQueue() {
 function segsNow() { return parse(S.settings.prompt); }
 
 function baseWeights(arts) {
-  const picked = S.favs.filter((f) => f.pick);
+  const picked = S.favs.filter((f) => f.pick && rateOf(f) === 'like');
   return arts.map((a) => {
     if (S.locks[a.name] || !picked.length) return a.w;
     const vals = picked.map((f) => f.w[a.name]).filter((v) => typeof v === 'number');
@@ -408,20 +409,93 @@ function retryImage(run, ci, ii) {
   enqueue(run, [[ci, ii]]);
 }
 
-// ---------------------------------------------------------------- favorites
+// ---------------------------------------------------------------- 평가: 즐겨찾기 / 애매함 / 싫어요 (조합 = 그림체 단위)
+// 애매함은 "어떤 부분은 좋고 어떤 부분은 별로"라서 통계에는 즐겨찾기의 절반(+0.5)으로 넣는다.
+const RATES = {
+  like: { label: '즐겨찾기', icon: '★', value: 1 },
+  meh: { label: '애매함', icon: '◐', value: 0.5 },
+  hate: { label: '싫어요', icon: '✕', value: -1 },
+};
+const rateOf = (f) => (f && RATES[f.rate] ? f.rate : 'like');
 const favKey = (run, combo) => `${run.id}:${combo.no}`;
 function favOf(run, combo) { return S.favs.find((f) => f.src === favKey(run, combo)); }
-function toggleFav(run, combo) {
+function doneImgs(combo) { return combo.images.filter((i) => i.status === 'done' && i.id).map((i) => ({ id: i.id, seed: i.seed })); }
+
+// 즐겨찾기 항목이 가리키는 회차·조합 (회차를 지웠으면 null)
+function favTarget(f) {
+  if (!f?.src) return null;
+  const [runId, no] = f.src.split(':');
+  const run = runById(runId);
+  if (!run) return null;
+  const ci = run.combos.findIndex((c) => String(c.no) === no);
+  return ci < 0 ? null : { run, ci, combo: run.combos[ci] };
+}
+// 지금 볼 수 있는 그림들 (회차가 남아 있으면 최신, 지웠으면 평가할 때 보관해 둔 것)
+function favImgs(f) {
+  const t = favTarget(f);
+  return t ? doneImgs(t.combo) : (f.imgs || []);
+}
+function favRatio(f) {
+  const t = favTarget(f);
+  if (t) return [t.run.params.width, t.run.params.height];
+  return f.ratio || [832, 1216];
+}
+
+async function forgetFav(f) {
+  S.favs = S.favs.filter((x) => x !== f);
+  // 회차를 이미 지운 평가라면, 보관해 두었던 그림도 같이 지운다.
+  if (!favTarget(f)) for (const im of f.imgs || []) await dropImage(im.id);
+}
+
+function rateCombo(run, combo, rate) {
   const f = favOf(run, combo);
-  if (f) {
-    S.favs = S.favs.filter((x) => x !== f);
-    toast(`조합 ${combo.no}을 즐겨찾기에서 뺐어요`);
+  const label = RATES[rate].label;
+  if (f && rateOf(f) === rate) {
+    forgetFav(f);
+    toast(`조합 ${combo.no}의 ${label}를 지웠어요`);
+  } else if (f) {
+    f.rate = rate;
+    f.imgs = doneImgs(combo);
+    toast(`조합 ${combo.no} → ${label}`, 'ok');
   } else {
-    S.favs.unshift({ id: `f${Date.now()}`, src: favKey(run, combo), name: `조합 ${combo.no}`, note: '', pick: false, order: namesOf(run, combo).slice(), w: Object.fromEntries(namesOf(run, combo).map((n, i) => [n, combo.weights[i]])) });
-    toast(`조합 ${combo.no}을 즐겨찾기에 넣었어요`, 'ok');
+    const names = namesOf(run, combo);
+    S.favs.unshift({
+      id: `f${Date.now()}`, src: favKey(run, combo), name: `조합 ${combo.no}`, note: '', pick: false, rate,
+      order: names.slice(), w: Object.fromEntries(names.map((n, i) => [n, combo.weights[i]])),
+      imgs: doneImgs(combo), ratio: [run.params.width, run.params.height], created: Date.now(),
+    });
+    toast(`조합 ${combo.no} → ${label}`, 'ok');
   }
   saveFavs();
-  renderAll();
+  afterRate();
+}
+
+// 회차를 지운 평가(그림만 남은 것)의 평가 바꾸기
+function rateFav(f, rate) {
+  const t = favTarget(f);
+  if (t) { rateCombo(t.run, t.combo, rate); return; }
+  if (rateOf(f) === rate) { forgetFav(f); toast(`${f.name}의 ${RATES[rate].label}를 지웠어요`); }
+  else { f.rate = rate; toast(`${f.name} → ${RATES[rate].label}`, 'ok'); }
+  saveFavs();
+  afterRate();
+}
+
+function afterRate() {
+  if (V.open) renderViewer();
+  renderView();
+}
+
+function rateButtons(current, onRate, big = false) {
+  return h('div', { class: `rate-row${big ? ' big' : ''}`, role: 'group', 'aria-label': '평가' },
+    Object.entries(RATES).map(([key, r]) => h('button', {
+      type: 'button', class: `rate-b ${key}${current === key ? ' on' : ''}`, 'aria-pressed': current === key ? 'true' : 'false',
+      onclick: () => onRate(key),
+    }, h('span', { class: 'rate-icon' }, r.icon), r.label)));
+}
+
+function rateBadge(rate) {
+  if (!rate) return null;
+  return h('span', { class: `badge ${rate}` }, `${RATES[rate].icon} ${RATES[rate].label}`);
 }
 
 function weightsFromMap(map, segs = segsNow()) {
@@ -518,15 +592,15 @@ async function publicFile(name, folder) {
   return null;
 }
 
-async function saveImage(run, combo, im) {
+async function saveImage(no, im, created = Date.now()) {
   const blob = await store.imageGet(im.id);
   if (!blob) { toast('그림 파일을 찾지 못했어요', 'bad'); return; }
-  const name = `조합${combo.no}_${im.seed}_${stamp(run.created)}.png`;
+  const name = `조합${no}_${im.seed}_${stamp(created)}.png`;
   const bytes = new Uint8Array(await blob.arrayBuffer());
   if (!native) { downloadBlob(name, blob); toast('다운로드했어요', 'ok'); return; }
   try {
     const target = await publicFile(name, 'Pictures/NAIArtistShuffle');
-    if (!target) { await shareImage(run, combo, im); return; }
+    if (!target) { await shareImage(no, im); return; }
     await Filesystem.writeFile({ path: target.path, directory: target.directory, data: toBase64(bytes), recursive: true });
     toast(`저장했어요: ${target.label}`, 'ok');
   } catch (e) {
@@ -534,63 +608,113 @@ async function saveImage(run, combo, im) {
   }
 }
 
-async function shareImage(run, combo, im) {
+async function shareImage(no, im) {
   const blob = await store.imageGet(im.id);
   if (!blob) return;
-  if (!native) { downloadBlob(`조합${combo.no}_${im.seed}.png`, blob); return; }
+  if (!native) { downloadBlob(`조합${no}_${im.seed}.png`, blob); return; }
   try {
-    const path = `share/조합${combo.no}_${im.seed}.png`;
+    const path = `share/조합${no}_${im.seed}.png`;
     await Filesystem.writeFile({ path, directory: 'CACHE', data: toBase64(new Uint8Array(await blob.arrayBuffer())), recursive: true });
-    await shareFile({ path, directory: 'CACHE', title: `조합 ${combo.no}` });
+    await shareFile({ path, directory: 'CACHE', title: `조합 ${no}` });
   } catch (e) {
     if (!/cancel/i.test(String(e?.message))) toast(`공유하지 못했어요: ${e?.message || e}`, 'bad');
   }
 }
 
 // ---------------------------------------------------------------- viewer
-const V = { open: false, runId: null, ci: 0, ii: 0 };
-function openViewer(run, ci, ii) {
-  Object.assign(V, { open: true, runId: run.id, ci, ii });
+// seq: 넘겨 볼 그림체(조합)들. 마지막 사진에서 더 넘기면 다음 그림체로 간다.
+const V = { open: false, seq: [], si: 0, ii: 0, from: '' };
+const seqFromRun = (run) => run.combos.map((c, ci) => ({ runId: run.id, ci }));
+const seqFromFavs = (list) => list.map((f) => { const t = favTarget(f); return t ? { runId: t.run.id, ci: t.ci } : { fav: f }; });
+
+function seqItem(it) {
+  if (it.fav) {
+    const f = it.fav;
+    return { no: f.name.replace(/^조합\s*/, ''), title: f.name, imgs: f.imgs || [], rate: rateOf(f), fav: f, ratio: favRatio(f), names: Object.keys(f.w || {}), weights: Object.values(f.w || {}), created: f.created || Date.now() };
+  }
+  const run = runById(it.runId);
+  const combo = run?.combos[it.ci];
+  if (!combo) return null;
+  const fav = favOf(run, combo);
+  return { no: combo.no, title: `조합 ${combo.no}`, imgs: doneImgs(combo), rate: fav ? rateOf(fav) : null, run, combo, ratio: [run.params.width, run.params.height], names: namesOf(run, combo), weights: combo.weights, created: run.created };
+}
+
+function openViewer(seq, si, ii, from = '') {
+  Object.assign(V, { open: true, seq, si, ii, from });
   renderViewer();
 }
-function closeViewer() { V.open = false; renderViewer(); }
-function viewerStep(d) {
-  const run = runById(V.runId);
-  if (!run) return;
-  const done = run.combos[V.ci].images.map((im, i) => [im, i]).filter(([im]) => im.status === 'done');
-  const at = done.findIndex(([, i]) => i === V.ii);
-  if (at < 0 || !done.length) return;
-  V.ii = done[(at + d + done.length) % done.length][1];
+function closeViewer() {
+  // 결과 화면에서 열었다면, 확대 화면에서 넘겨 본 조합으로 탭을 맞춘다.
+  const it = V.seq[V.si];
+  if (V.from === 'result' && it?.runId === S.currentRunId && S.view === 'result' && S.detail && S.tab !== it.ci) {
+    S.tab = it.ci;
+    V.open = false;
+    renderViewer();
+    renderView();
+    return;
+  }
+  V.open = false;
   renderViewer();
+}
+function viewerStep(d) {
+  const cur = seqItem(V.seq[V.si]);
+  if (!cur) return;
+  const ni = V.ii + d;
+  if (ni >= 0 && ni < cur.imgs.length) { V.ii = ni; renderViewer(); return; }
+  // 다음(이전) 그림체 중 그림이 있는 것으로
+  const n = V.seq.length;
+  for (let step = 1; step <= n; step++) {
+    const si = (V.si + d * step + n * n) % n;
+    const it = seqItem(V.seq[si]);
+    if (it && it.imgs.length) {
+      V.si = si;
+      V.ii = d > 0 ? 0 : it.imgs.length - 1;
+      renderViewer();
+      return;
+    }
+  }
+}
+
+function viewerRate(rate) {
+  const it = seqItem(V.seq[V.si]);
+  if (!it) return;
+  if (it.run) rateCombo(it.run, it.combo, rate);
+  else rateFav(it.fav, rate);
 }
 
 async function renderViewer() {
   const root = document.getElementById('viewer');
   root.innerHTML = '';
   root.hidden = !V.open;
+  document.body.classList.toggle('viewer-open', V.open);
   if (!V.open) return;
-  const run = runById(V.runId);
-  const combo = run?.combos[V.ci];
-  const im = combo?.images[V.ii];
-  if (!im?.id) { closeViewer(); return; }
-  const img = h('img', { alt: `조합 ${combo.no} 그림`, class: 'viewer-img' });
+  const it = seqItem(V.seq[V.si]);
+  if (!it || !it.imgs.length) { closeViewer(); return; }
+  if (V.ii >= it.imgs.length) V.ii = it.imgs.length - 1;
+  const im = it.imgs[V.ii];
+  const img = h('img', { alt: `${it.title} 그림 ${V.ii + 1}`, class: 'viewer-img' });
   urlFor(im.id).then((u) => { if (u) img.src = u; });
   let sx = 0, sy = 0;
   const stage = h('div', { class: 'viewer-stage', ontouchstart: (e) => { sx = e.touches[0].clientX; sy = e.touches[0].clientY; },
     ontouchend: (e) => { const dx = e.changedTouches[0].clientX - sx, dy = e.changedTouches[0].clientY - sy; if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) viewerStep(dx < 0 ? 1 : -1); } }, img);
-  const n = combo.images.filter((x) => x.status === 'done').length;
-  const pos = combo.images.filter((x, i) => x.status === 'done' && i <= V.ii).length;
+  const top = topArtists(it.names, it.weights, 3);
   root.append(
     h('div', { class: 'viewer-top' },
-      h('span', { class: 'viewer-title' }, `조합 ${combo.no} · ${pos}/${n} · 시드 ${im.seed}`),
-      h('button', { class: 'btn small ghost', onclick: closeViewer, 'aria-label': '닫기' }, '닫기')),
+      h('div', { class: 'viewer-head' },
+        h('div', { class: 'viewer-title' }, it.title, rateBadge(it.rate)),
+        h('div', { class: 'viewer-sub' },
+          h('span', { class: 'viewer-count' }, `사진 ${V.ii + 1} / ${it.imgs.length}`),
+          h('span', { class: 'viewer-pos' }, `그림체 ${V.si + 1} / ${V.seq.length}`))),
+      h('button', { class: 'btn ghost close', onclick: closeViewer, 'aria-label': '닫기' }, '닫기')),
     stage,
+    h('div', { class: 'viewer-artists' }, top.map(([w, n], i) => [i ? ' · ' : '', h('b', {}, n), ` ${fmt(w)}`])),
+    rateButtons(it.rate, viewerRate, true),
     h('div', { class: 'viewer-bar' },
-      h('button', { class: 'btn ghost', onclick: () => viewerStep(-1), 'aria-label': '이전 그림' }, '‹'),
-      h('button', { class: 'btn', onclick: () => saveImage(run, combo, im) }, '저장'),
-      h('button', { class: 'btn', onclick: () => shareImage(run, combo, im) }, '공유'),
-      h('button', { class: 'btn', onclick: () => copy(String(im.seed), '시드') }, '시드 복사'),
-      h('button', { class: 'btn ghost', onclick: () => viewerStep(1), 'aria-label': '다음 그림' }, '›')),
+      h('button', { class: 'btn nav-arrow', onclick: () => viewerStep(-1), 'aria-label': '이전' }, '‹'),
+      h('button', { class: 'btn', onclick: () => saveImage(it.no, im, it.created) }, '저장'),
+      h('button', { class: 'btn', onclick: () => shareImage(it.no, im) }, '공유'),
+      h('button', { class: 'btn', onclick: () => copy(String(im.seed), '시드') }, '시드'),
+      h('button', { class: 'btn nav-arrow', onclick: () => viewerStep(1), 'aria-label': '다음' }, '›')),
   );
 }
 
@@ -636,7 +760,7 @@ function renderShuffleHint() {
   const el = document.getElementById('shuffle-hint');
   if (!el) return;
   const st = S.settings;
-  const picked = S.favs.filter((f) => f.pick).map((f) => f.name);
+  const picked = S.favs.filter((f) => f.pick && rateOf(f) === 'like').map((f) => f.name);
   const bad = validateShuffle();
   el.classList.toggle('bad', Boolean(bad));
   el.textContent = bad || (st.mode === 'vary'
@@ -654,22 +778,6 @@ function renderMakeButton() {
   const n = Math.max(1, Math.round(S.settings.combos) || 1);
   const k = Math.max(1, Math.min(10, Math.round(S.settings.perCombo || 1)));
   b.textContent = Q.busy ? `뽑는 중 ${Q.done}/${Q.total} · 더 쌓기: ${n}조합 × ${k}장` : `${n}조합 × ${k}장 뽑기 (총 ${n * k}장)`;
-}
-
-function favCard(f) {
-  const names = Object.keys(f.w);
-  const ws = names.map((n) => f.w[n]);
-  const note = h('input', { type: 'text', id: `note-${f.id}`, class: 'note', placeholder: '메모 (예: 채색 좋음)', value: f.note || '',
-    oninput: (e) => { f.note = e.target.value; saveFavs(); } });
-  return h('div', { class: 'card fav' },
-    h('div', { class: 'row between' },
-      h('label', { class: 'check' }, h('input', { type: 'checkbox', id: `pick-${f.id}`, checked: f.pick, onchange: (e) => { f.pick = e.target.checked; saveFavs(); renderShuffleHint(); } }), h('b', {}, f.name), h('span', { class: 'muted small' }, '기준')),
-      h('div', { class: 'row gap6' },
-        h('button', { class: 'btn small', onclick: () => copy(artistLine(names, ws, S.settings.space), '작가 블록') }, '복사'),
-        h('button', { class: 'btn small', onclick: () => useAsBase(f.w, f.name, f.order) }, '프롬프트에 넣기'),
-        confirmBtn('삭제', '한 번 더', () => { S.favs = S.favs.filter((x) => x !== f); saveFavs(); renderAll(); }))),
-    note,
-    h('div', { class: 'top small' }, '주도 ', topArtists(names, ws).map(([w, n], i) => [i ? ' · ' : '', h('b', {}, n), ` ${fmt(w)}`])));
 }
 
 function viewMake() {
@@ -707,11 +815,7 @@ function viewMake() {
         field('시드', select('seedMode', [['same', '조합끼리 같은 시드'], ['diff', '매번 다른 시드'], ['fixed', '시드 직접 지정']], renderShuffleHint)),
         h('div', { id: 'fixed-field' }, field('시작 시드', h('input', { type: 'number', id: 'in-fixedSeed', inputmode: 'numeric', value: st.fixedSeed, oninput: (e) => { S.settings.fixedSeed = e.target.value; saveSettings(); } }), '장마다 1씩 늘려요'))),
       h('p', { id: 'shuffle-hint', class: 'hint' }),
-      h('p', { class: 'muted small' }, '"조합끼리 같은 시드"는 모든 조합이 같은 시드 세트를 써서 그림체 차이만 비교돼요.')),
-    h('section', { class: 'card' },
-      h('div', { class: 'row between' }, h('h2', {}, '즐겨찾기'), h('span', { class: 'muted small' }, `${S.favs.length}개`)),
-      h('p', { class: 'muted small' }, '"기준"을 체크한 즐겨찾기들의 평균이 "기준에서 흔들기"의 출발점이 돼요.'),
-      S.favs.length ? S.favs.map(favCard) : h('p', { class: 'empty' }, '결과에서 ☆를 누르면 여기에 모여요.')),
+      h('p', { class: 'muted small' }, '"조합끼리 같은 시드"는 모든 조합이 같은 시드 세트를 써서 그림체 차이만 비교돼요. "기준에서 흔들기"의 기준은 즐겨찾기 탭에서 "흔들기 기준"을 체크해 골라요.')),
     h('div', { class: 'sticky-go' }, makeBtn));
   setTimeout(() => { renderArtistList(artistBox); renderOrders(); renderShuffleHint(); renderMakeButton(); }, 0);
   return v;
@@ -727,7 +831,8 @@ function cellContent(run, ci, ii) {
   if (im.status === 'done' && im.id) {
     const img = h('img', { alt: `조합 ${combo.no} 그림 ${ii + 1}`, loading: 'lazy' });
     urlFor(im.id).then((u) => { if (u) img.src = u; });
-    return h('button', { class: 'cell done', style: `aspect-ratio:${run.params.width}/${run.params.height}`, onclick: () => openViewer(run, ci, ii) }, img);
+    const pos = combo.images.slice(0, ii).filter((x) => x.status === 'done' && x.id).length;
+    return h('button', { class: 'cell done', style: `aspect-ratio:${run.params.width}/${run.params.height}`, onclick: () => openViewer(seqFromRun(run), ci, pos, 'result') }, img);
   }
   return h('div', { class: `cell ${im.status}`, style: `aspect-ratio:${run.params.width}/${run.params.height}` },
     im.status === 'run' ? h('div', { class: 'spinner' }) : null,
@@ -772,7 +877,14 @@ function setTab(i) {
   if (!run) return;
   S.tab = Math.max(0, Math.min(run.combos.length - 1, i));
   renderView();
-  document.getElementById('tabs')?.children[S.tab]?.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
+}
+// 번호 탭 줄에서 지금 조합이 가운데 오게 (다시 그려도 맨 앞으로 튀지 않게)
+function centerActiveTab() {
+  const bar = document.getElementById('tabs');
+  const on = bar?.querySelector('.tab.on');
+  if (!bar || !on) return;
+  const b = bar.getBoundingClientRect(), a = on.getBoundingClientRect();
+  bar.scrollLeft += (a.left + a.width / 2) - (b.left + b.width / 2);
 }
 
 function runHead(run, extra) {
@@ -802,9 +914,11 @@ function viewGallery(run) {
       pic.append(state === 'run' ? h('div', { class: 'spinner' }) : null, h('span', { class: 'cell-label' }, { run: '생성 중', wait: '대기', fail: '실패', done: '중단' }[state]));
     }
     const top = topArtists(namesOf(run, c), c.weights, 2);
+    const fv = favOf(run, c);
+    if (fv) pic.append(h('span', { class: `g-badge ${rateOf(fv)}` }, `${RATES[rateOf(fv)].icon}`));
     return h('button', { class: 'g-card', onclick: () => { S.galleryY = window.scrollY; S.tab = i; S.detail = true; renderView(); window.scrollTo(0, 0); } },
       pic,
-      h('span', { class: 'g-cap' }, h('b', {}, `${c.no}`), favOf(run, c) ? h('span', { class: 'g-star' }, '★') : null, h('span', { class: 'muted' }, ` ${done}/${c.images.length}`)),
+      h('span', { class: 'g-cap' }, h('b', {}, `${c.no}`), h('span', { class: 'muted' }, ` ${done}/${c.images.length}장`)),
       h('span', { class: 'g-top' }, top.map(([w, n]) => `${n} ${fmt(w)}`).join(' · ')));
   });
   return h('div', { class: 'view' },
@@ -822,7 +936,7 @@ function viewResult() {
   const ci = S.tab;
   const tabs = h('div', { id: 'tabs', class: 'tabs', 'data-run': run.id, role: 'tablist' },
     run.combos.map((c, i) => h('button', { role: 'tab', class: `tab${i === S.tab ? ' on' : ''}`, 'aria-selected': i === S.tab ? 'true' : 'false', 'data-state': tabState(c), onclick: () => setTab(i) },
-      h('span', { class: 'dot' }), `${c.no}`, favOf(run, c) ? ' ★' : '')));
+      h('span', { class: 'dot' }), `${c.no}`, favOf(run, c) ? h('span', { class: `tab-rate ${rateOf(favOf(run, c))}` }, RATES[rateOf(favOf(run, c))].icon) : null)));
   const fav = favOf(run, combo);
   const cols = S.settings.cols || 2;
   const grid = h('div', { class: `cells cols${cols}` }, combo.images.map((_, ii) => registerCell(run, ci, ii)));
@@ -830,10 +944,9 @@ function viewResult() {
   const panel = h('div', { class: 'panel', ontouchstart: (e) => { sx = e.touches[0].clientX; sy = e.touches[0].clientY; },
     ontouchend: (e) => { const dx = e.changedTouches[0].clientX - sx, dy = e.changedTouches[0].clientY - sy; if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.6) setTab(S.tab + (dx < 0 ? 1 : -1)); } },
   h('div', { class: 'row between' },
-    h('h2', {}, `조합 ${combo.no}`),
-    h('div', { class: 'row gap6' },
-      h('button', { class: `btn small${fav ? ' star' : ''}`, onclick: () => toggleFav(run, combo), 'aria-pressed': fav ? 'true' : 'false' }, fav ? '★ 즐겨찾기' : '☆ 즐겨찾기'),
-      h('div', { class: 'seg', role: 'group', 'aria-label': '한 줄에 보일 그림 수' }, [1, 2, 3].map((n) => h('button', { class: `seg-b${cols === n ? ' on' : ''}`, onclick: () => { S.settings.cols = n; saveSettings(); renderView(); } }, `${n}`))))),
+    h('h2', { class: 'combo-title' }, `조합 ${combo.no}`),
+    h('div', { class: 'seg', role: 'group', 'aria-label': '한 줄에 보일 그림 수' }, [1, 2, 3].map((n) => h('button', { class: `seg-b${cols === n ? ' on' : ''}`, onclick: () => { S.settings.cols = n; saveSettings(); renderView(); } }, `${n}열`)))),
+  rateButtons(fav ? rateOf(fav) : null, (r) => rateCombo(run, combo, r)),
   h('div', { class: 'top small' }, '주도 ', topArtists(namesOf(run, combo), combo.weights).map(([w, n], i) => [i ? ' · ' : '', h('b', {}, n), ` ${fmt(w)}`])),
   grid,
   h('div', { class: 'row wrap gap6' },
@@ -851,42 +964,187 @@ function viewResult() {
 }
 
 // --- history
+function runSummary(run) {
+  const filled = run.combos.filter((c) => c.images.some((i) => i.status === 'done'));
+  const nos = filled.map((c) => c.no);
+  const done = run.combos.reduce((x, c) => x + c.images.filter((i) => i.status === 'done').length, 0);
+  const left = run.combos.reduce((x, c) => x + c.images.filter((i) => i.status === 'wait' || i.status === 'run').length, 0);
+  const lo = Math.min(...nos), hi = Math.max(...nos);
+  const range = nos.length ? (lo === hi ? `조합 ${lo}` : `조합 ${lo}~${hi}`) : '아직 그림 없음';
+  return { filled, text: `${range}${nos.length ? ` · ${filled.length}조합 · ${done}장` : ''}${left ? ` · 남은 ${left}장` : ''}` };
+}
+
 function viewHistory() {
   const v = h('div', { class: 'view' });
   if (!S.runs.length) { v.append(h('section', { class: 'card' }, h('h2', {}, '기록이 없어요'), h('p', { class: 'muted' }, '뽑은 조합은 여기에 날짜별로 쌓여요.'))); return v; }
   for (const run of S.runs) {
-    const total = run.combos.reduce((x, c) => x + c.images.length, 0);
-    const done = run.combos.reduce((x, c) => x + c.images.filter((i) => i.status === 'done').length, 0);
+    const sum = runSummary(run);
     const thumbs = h('div', { class: 'thumbs' });
-    for (const c of run.combos.slice(0, 6)) {
+    for (const c of sum.filled.slice(0, 4)) {
       const im = c.images.find((i) => i.status === 'done');
       const t = h('div', { class: 'thumb', style: `aspect-ratio:${run.params.width}/${run.params.height}` });
-      if (im) urlFor(im.id).then((u) => { if (u) t.append(h('img', { src: u, alt: '' })); });
+      urlFor(im.id).then((u) => { if (u) t.append(h('img', { src: u, alt: '' })); });
       thumbs.append(t);
     }
     v.append(h('section', { class: `card run${run.id === S.currentRunId ? ' current' : ''}` },
       h('div', { class: 'row between' },
-        h('div', {}, h('b', {}, when(run.created)), h('span', { class: 'muted small' }, ` · ${run.combos.length}조합 · ${done}/${total}장`)),
+        h('b', { class: 'run-date' }, when(run.created)),
         h('div', { class: 'row gap6' },
-          h('button', { class: 'btn small', onclick: () => { S.currentRunId = run.id; S.tab = 0; S.detail = false; S.view = 'result'; renderAll(); } }, '열기'),
+          h('button', { class: 'btn small', onclick: () => { S.currentRunId = run.id; S.tab = 0; S.detail = false; S.view = 'result'; renderAll(); window.scrollTo(0, 0); } }, '열기'),
           confirmBtn('삭제', '한 번 더', () => deleteRun(run)))),
-      h('div', { class: 'muted small' }, `조합 ${run.combos.map((c) => c.no).join(', ')}`),
-      thumbs));
+      h('div', { class: 'run-line' }, sum.text),
+      sum.filled.length ? thumbs : null));
   }
   return v;
 }
 
+async function dropImage(id) {
+  if (!id) return;
+  await store.imageDelete(id).catch(() => {});
+  if (urls.has(id)) { URL.revokeObjectURL(urls.get(id)); urls.delete(id); }
+}
+
 async function deleteRun(run) {
   if (Q.items.some((i) => i.runId === run.id) || (Q.busy && run.combos.some((c) => c.images.some((i) => i.status === 'run' || i.status === 'wait')))) { toast('뽑는 중인 기록은 지울 수 없어요. 먼저 멈춰 주세요.', 'bad'); return; }
-  for (const c of run.combos) for (const im of c.images) if (im.id) {
-    await store.imageDelete(im.id).catch(() => {});
-    if (urls.has(im.id)) { URL.revokeObjectURL(urls.get(im.id)); urls.delete(im.id); }
+  // 평가한 조합의 그림은 즐겨찾기 탭에서 계속 볼 수 있게 남겨 둔다.
+  const keep = new Set();
+  for (const f of S.favs) {
+    const t = favTarget(f);
+    if (t && t.run === run) {
+      f.imgs = doneImgs(t.combo);
+      f.ratio = [run.params.width, run.params.height];
+      f.created = f.created || run.created;
+      for (const im of f.imgs) keep.add(im.id);
+    }
   }
+  saveFavs();
+  for (const c of run.combos) for (const im of c.images) if (im.id && !keep.has(im.id)) await dropImage(im.id);
   await store.runDelete(run.id).catch(() => {});
   S.runs = S.runs.filter((r) => r !== run);
   if (S.currentRunId === run.id) S.currentRunId = S.runs[0]?.id || null;
-  toast('기록을 지웠어요');
+  toast(keep.size ? '기록을 지웠어요. 평가한 그림체는 즐겨찾기 탭에 남아 있어요.' : '기록을 지웠어요');
   renderAll();
+}
+
+// --- favorites tab: 즐겨찾기 (작은 탭: 애매함 · 싫어요 · 통계)
+function favCard(f, list, idx) {
+  const rate = rateOf(f);
+  const imgs = favImgs(f);
+  const [rw, rh] = favRatio(f);
+  const names = f.order && f.order.length ? f.order.filter((n) => n in (f.w || {})) : Object.keys(f.w || {});
+  const ws = names.map((n) => f.w[n]);
+  const t = favTarget(f);
+  const strip = h('div', { class: `fav-strip n${Math.min(Math.max(imgs.length, 1), 3)}` });
+  if (!imgs.length) strip.append(h('div', { class: 'fav-noimg', style: `aspect-ratio:${rw}/${rh}` }, '그림 없음'));
+  imgs.slice(0, 3).forEach((im, ii) => {
+    const b = h('button', { class: 'fav-pic', style: `aspect-ratio:${rw}/${rh}`, 'aria-label': `${f.name} 그림 ${ii + 1} 크게 보기`, onclick: () => openViewer(seqFromFavs(list), idx, ii, 'fav') });
+    urlFor(im.id).then((u) => { if (u) b.append(h('img', { src: u, alt: '' })); });
+    strip.append(b);
+  });
+  const note = h('textarea', { id: `note-${f.id}`, class: 'note', rows: 3, placeholder: rate === 'meh' ? '어디가 좋고 어디가 별로였는지 (예: 채색은 좋은데 얼굴이 별로)' : '메모 (예: 채색 좋음, 선이 깔끔함)', value: f.note || '',
+    oninput: (e) => { f.note = e.target.value; saveFavs(); } });
+  return h('section', { class: 'card fav' },
+    h('div', { class: 'row between' },
+      h('div', { class: 'fav-name' }, h('b', {}, f.name), imgs.length > 3 ? h('span', { class: 'muted' }, ` +${imgs.length - 3}장`) : null),
+      rate === 'like' ? h('label', { class: 'check' }, h('input', { type: 'checkbox', id: `pick-${f.id}`, checked: f.pick, onchange: (e) => { f.pick = e.target.checked; saveFavs(); } }), h('span', {}, '흔들기 기준')) : null),
+    strip,
+    names.length ? h('div', { class: 'top' }, '주도 ', topArtists(names, ws).map(([w, n], i) => [i ? ' · ' : '', h('b', {}, n), ` ${fmt(w)}`])) : null,
+    note,
+    rateButtons(rate, (r) => rateFav(f, r)),
+    h('div', { class: 'row wrap gap6' },
+      t ? h('button', { class: 'btn small', onclick: () => { S.currentRunId = t.run.id; S.tab = t.ci; S.detail = true; S.view = 'result'; renderAll(); window.scrollTo(0, 0); } }, '결과에서 보기') : null,
+      names.length ? h('button', { class: 'btn small', onclick: () => useAsBase(f.w, f.name, f.order) }, '프롬프트에 넣기') : null,
+      names.length ? h('button', { class: 'btn small', onclick: () => copy(artistLine(names, ws, S.settings.space), '작가 블록') }, '작가만 복사') : null));
+}
+
+function viewFavs() {
+  const counts = { like: 0, meh: 0, hate: 0 };
+  for (const f of S.favs) counts[rateOf(f)]++;
+  const tabs = [['like', `★ 즐겨찾기 ${counts.like}`], ['meh', `애매함 ${counts.meh}`], ['hate', `싫어요 ${counts.hate}`], ['stats', '통계']];
+  const sub = h('div', { class: 'subtabs', role: 'tablist' }, tabs.map(([k, label]) => h('button', {
+    role: 'tab', class: `subtab${S.favTab === k ? ' on' : ''}${k === 'like' ? ' main' : ''}`, 'aria-selected': S.favTab === k ? 'true' : 'false',
+    onclick: () => { S.favTab = k; renderView(); window.scrollTo(0, 0); } }, label)));
+  if (S.favTab === 'stats') return h('div', { class: 'view' }, sub, viewStats());
+  const list = S.favs.filter((f) => rateOf(f) === S.favTab);
+  const empty = { like: '결과나 확대 화면에서 ★ 즐겨찾기를 누르면 여기에 모여요.', meh: '애매함을 누른 그림체가 여기에 모여요. 메모에 좋은 점과 아쉬운 점을 적어 두면 통계에 같이 보여요.', hate: '싫어요를 누른 그림체가 여기에 모여요.' }[S.favTab];
+  return h('div', { class: 'view' }, sub,
+    S.favTab === 'like' ? h('p', { class: 'muted small' }, '"흔들기 기준"을 체크한 즐겨찾기들의 평균이 뽑기 탭 "기준에서 흔들기"의 출발점이 돼요.') : null,
+    list.length ? list.map((f, i) => favCard(f, list, i)) : h('section', { class: 'card' }, h('p', { class: 'empty' }, empty)));
+}
+
+// 통계: 작가마다 평가별 평균 가중치. 즐겨찾기 +1, 애매함 +0.5, 싫어요 −1.
+function computeStats() {
+  const rated = S.favs.filter((f) => f.w && Object.keys(f.w).length);
+  const all = new Set();
+  rated.forEach((f) => Object.keys(f.w).forEach((n) => all.add(n)));
+  const rows = [];
+  for (const name of all) {
+    let lw = 0, lv = 0, mw = 0, mc = 0, hw = 0, hc = 0, aw = 0, ac = 0;
+    for (const f of rated) {
+      const w = f.w[name];
+      if (typeof w !== 'number') continue;
+      const r = rateOf(f);
+      aw += w; ac++;
+      if (r === 'like' || r === 'meh') { const v = RATES[r].value; lw += w * v; lv += v; }
+      if (r === 'meh') { mw += w; mc++; }
+      if (r === 'hate') { hw += w; hc++; }
+    }
+    const like = lv ? lw / lv : null;
+    const meh = mc ? mw / mc : null;
+    const hate = hc ? hw / hc : null;
+    const base = hate ?? (ac ? aw / ac : S.settings.avg);
+    const diff = like == null ? (hate == null ? 0 : -(hate - (ac ? aw / ac : S.settings.avg))) : like - base;
+    rows.push({ name, like, meh, hate, diff, n: ac });
+  }
+  rows.sort((a, b) => b.diff - a.diff);
+  return { rows, rated };
+}
+
+function statRow(r, max) {
+  const pct = max ? Math.min(100, (Math.abs(r.diff) / max) * 50) : 0;
+  return h('div', { class: 'stat-row' },
+    h('div', { class: 'stat-name' }, r.name),
+    h('div', { class: 'stat-bar' }, h('span', { class: `stat-fill ${r.diff >= 0 ? 'pos' : 'neg'}`, style: r.diff >= 0 ? `left:50%;width:${pct}%` : `right:50%;width:${pct}%` })),
+    h('div', { class: 'stat-nums' },
+      h('span', { class: `stat-diff ${r.diff >= 0 ? 'pos' : 'neg'}` }, `${r.diff >= 0 ? '+' : '−'}${Math.abs(r.diff).toFixed(2)}`),
+      h('span', {}, `★ ${r.like == null ? '-' : r.like.toFixed(2)}`),
+      h('span', {}, `◐ ${r.meh == null ? '-' : r.meh.toFixed(2)}`),
+      h('span', {}, `✕ ${r.hate == null ? '-' : r.hate.toFixed(2)}`)));
+}
+
+function viewStats() {
+  const counts = { like: 0, meh: 0, hate: 0 };
+  for (const f of S.favs) counts[rateOf(f)]++;
+  const { rows, rated } = computeStats();
+  const box = h('div', { class: 'view' });
+  box.append(h('section', { class: 'card' },
+    h('h2', {}, '평가한 그림체'),
+    h('div', { class: 'stat-counts' },
+      h('div', { class: 'stat-count like' }, h('b', {}, String(counts.like)), h('span', {}, '★ 즐겨찾기')),
+      h('div', { class: 'stat-count meh' }, h('b', {}, String(counts.meh)), h('span', {}, '◐ 애매함')),
+      h('div', { class: 'stat-count hate' }, h('b', {}, String(counts.hate)), h('span', {}, '✕ 싫어요'))),
+    h('p', { class: 'muted small' }, '작가마다 "좋게 본 그림체에서의 평균 가중치"에서 "싫어요 그림체에서의 평균 가중치"를 뺀 값이에요. +면 그 작가를 세게 넣을수록 마음에 들었다는 뜻이에요. 즐겨찾기는 1, 애매함은 0.5만큼 반영해요(좋은 점과 아쉬운 점이 섞여 있어서). 싫어요가 없으면 평가한 전체 평균과 비교해요.'),
+    rated.length < 10 ? h('p', { class: 'hint' }, `아직 ${rated.length}개라 참고만 하세요. 10개 이상 평가하면 믿을 만해져요.`) : null));
+  if (!rows.length) { box.append(h('section', { class: 'card' }, h('p', { class: 'empty' }, '평가한 그림체가 생기면 작가별 통계가 나와요.'))); return box; }
+  const max = Math.max(...rows.map((r) => Math.abs(r.diff)), 0.01);
+  const pos = rows.filter((r) => r.diff > 0.005).slice(0, 5);
+  const neg = rows.filter((r) => r.diff < -0.005).slice(-5).reverse();
+  box.append(h('section', { class: 'card' }, h('h2', {}, '세게 넣을수록 좋았던 작가'), pos.length ? pos.map((r) => statRow(r, max)) : h('p', { class: 'empty' }, '아직 없어요.')));
+  box.append(h('section', { class: 'card' }, h('h2', {}, '세게 넣을수록 별로였던 작가'), neg.length ? neg.map((r) => statRow(r, max)) : h('p', { class: 'empty' }, '아직 없어요.')));
+  box.append(h('section', { class: 'card' },
+    h('details', {}, h('summary', {}, `작가 전체 ${rows.length}명 보기`), h('div', { class: 'stat-list' }, rows.map((r) => statRow(r, max))))));
+  const likeMap = Object.fromEntries(rows.filter((r) => r.like != null).map((r) => [r.name, Math.round(r.like * 10) / 10]));
+  if (Object.keys(likeMap).length) {
+    box.append(h('section', { class: 'card' },
+      h('h2', {}, '좋게 본 평균으로 시작하기'),
+      h('p', { class: 'muted small' }, '즐겨찾기(1)와 애매함(0.5)의 평균 가중치를 프롬프트에 넣어요. 순서는 그대로 둬요.'),
+      h('button', { class: 'btn', onclick: () => useAsBase(likeMap, '좋게 본 평균') }, '프롬프트에 넣기')));
+  }
+  const mehNotes = S.favs.filter((f) => rateOf(f) === 'meh' && (f.note || '').trim());
+  box.append(h('section', { class: 'card' },
+    h('h2', {}, '애매함 메모'),
+    mehNotes.length ? mehNotes.map((f) => h('div', { class: 'meh-note' }, h('b', {}, f.name), h('p', {}, f.note))) : h('p', { class: 'empty' }, '애매함 그림체에 메모를 남기면 여기에 모여요.')));
+  return box;
 }
 
 // --- settings
@@ -954,7 +1212,7 @@ async function checkUpdate(box) {
 }
 
 // ---------------------------------------------------------------- frame
-const VIEWS = [['make', '뽑기'], ['result', '결과'], ['history', '기록'], ['settings', '설정']];
+const VIEWS = [['make', '뽑기'], ['result', '결과'], ['history', '기록'], ['fav', '즐겨찾기'], ['settings', '설정']];
 
 function renderStatus() {
   const bar = document.getElementById('status');
@@ -975,9 +1233,10 @@ function renderView() {
   const main = document.getElementById('main');
   const y = window.scrollY;
   main.innerHTML = '';
-  const fn = { make: viewMake, result: viewResult, history: viewHistory, settings: viewSettings }[S.view];
+  const fn = { make: viewMake, result: viewResult, history: viewHistory, fav: viewFavs, settings: viewSettings }[S.view];
   main.append(fn());
-  window.scrollTo(0, S.view === 'result' ? y : 0);
+  window.scrollTo(0, S.view === 'result' || S.view === 'fav' ? y : 0);
+  if (S.view === 'result' && S.detail) centerActiveTab();
   if (S.view === 'settings') store.usage().then((u) => { const el = document.getElementById('usage-box'); if (el && u != null) el.textContent = `폰에 저장된 그림·기록: 약 ${(u / 1048576).toFixed(0)}MB`; });
 }
 
@@ -986,7 +1245,7 @@ function renderNav() {
   nav.innerHTML = '';
   for (const [id, label] of VIEWS) {
     nav.append(h('button', { class: `nav-b${S.view === id ? ' on' : ''}`, 'aria-current': S.view === id ? 'page' : null,
-      onclick: () => { const same = S.view === id; if (same && id === 'result') S.detail = false; S.view = id; renderAll(); if (!same) window.scrollTo(0, 0); } }, label,
+      onclick: () => { const same = S.view === id; if (same && id === 'result') S.detail = false; if (id === 'fav' && !same) S.favTab = 'like'; S.view = id; renderAll(); if (!same) window.scrollTo(0, 0); } }, label,
     id === 'result' && Q.busy ? h('span', { class: 'nav-dot' }) : null));
   }
 }
