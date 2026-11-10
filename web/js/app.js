@@ -1738,6 +1738,7 @@ function startCup(srcs, label) {
   }
   const cup = { id: `c${Date.now()}`, created: Date.now(), label, entrants: list, round, next: [], mi: 0, size: P, out: {}, done: false, ranking: [] };
   S.cups.unshift(cup);
+  S.cupOut = false;
   skipByes(cup);
   saveCups();
   S.favTab = 'cup';
@@ -1784,21 +1785,44 @@ function pickCup(cup, side) {
 }
 
 const cupPick = {};  // 대전 화면에서 각 그림체가 지금 보여 주는 그림 번호
+// 월드컵 대전 화면은 화면 전체를 쓴다. 폰을 세로로 들면 위아래, 가로로 들면 좌우가 보통 더 크게 보인다.
+function cupLayout(ratio) {
+  const pref = S.settings.cupLayout || 'auto';
+  if (pref !== 'auto') return pref;
+  const W = window.innerWidth, H = window.innerHeight - 70;
+  const r = ratio[0] / ratio[1];
+  const row = Math.min(W / 2, H * r);
+  const col = Math.min(W, (H / 2) * r);
+  return row >= col ? 'row' : 'col';
+}
+
 function cupSide(cup, src, side) {
   const s = styleOf(src);
-  if (!s) return h('div', { class: 'cup-side' }, h('p', { class: 'empty' }, '그림체를 찾지 못했어요'));
+  if (!s) return h('div', { class: 'cupfs-side' }, h('p', { class: 'empty' }, '그림체를 찾지 못했어요'));
   const n = s.imgs.length;
   const i = ((cupPick[src] || 0) % n + n) % n;
-  const pic = h('button', { class: 'cup-pic', style: `aspect-ratio:${s.ratio[0]}/${s.ratio[1]}`, 'aria-label': `${s.title} 크게 보기`, onclick: () => openViewer([seqItemOfStyle(s)], 0, i, 'cup') });
-  urlFor(s.imgs[i].id).then((u) => { if (u) pic.append(h('img', { src: u, alt: '' })); });
-  return h('div', { class: 'cup-side' },
-    pic,
-    n > 1 ? h('div', { class: 'cup-flip' },
-      h('button', { class: 'btn small ghost', onclick: () => { cupPick[src] = i - 1; renderView(); } }, '‹'),
-      h('span', { class: 'muted small' }, `${i + 1}/${n}`),
-      h('button', { class: 'btn small ghost', onclick: () => { cupPick[src] = i + 1; renderView(); } }, '›')) : null,
-    h('div', { class: 'cup-name' }, s.title),
-    h('button', { class: 'btn primary wide', onclick: () => pickCup(cup, side) }, '이걸로'));
+  const img = h('img', { alt: `${s.title} 그림 ${i + 1}` });
+  urlFor(s.imgs[i].id).then((u) => { if (u) img.src = u; });
+  const flip = (d) => (e) => { e.stopPropagation(); cupPick[src] = i + d; renderView(); };
+  return h('div', { class: `cupfs-side s${side}` },
+    h('button', { class: 'cupfs-pic', 'aria-label': `${s.title} 크게 보기`, onclick: () => openViewer([seqItemOfStyle(s)], 0, i, 'cup') }, img),
+    h('div', { class: 'cupfs-name' }, s.title, n > 1 ? h('span', { class: 'cupfs-count' }, ` ${i + 1}/${n}`) : null),
+    n > 1 ? h('button', { class: 'cupfs-flip left', onclick: flip(-1), 'aria-label': '이전 그림' }, '‹') : null,
+    n > 1 ? h('button', { class: 'cupfs-flip right', onclick: flip(1), 'aria-label': '다음 그림' }, '›') : null,
+    h('button', { class: 'cupfs-pick', onclick: () => pickCup(cup, side) }, '이걸로 ✓'));
+}
+
+function cupFull(cup) {
+  const a = cup.round[cup.mi * 2], b = cup.round[cup.mi * 2 + 1];
+  const matches = cup.round.length / 2;
+  const ratio = (styleOf(a) || styleOf(b))?.ratio || [832, 1216];
+  const layout = cupLayout(ratio);
+  return h('div', { class: `cupfs ${layout}`, role: 'dialog', 'aria-label': '이상형 월드컵' },
+    h('div', { class: 'cupfs-top' },
+      h('button', { class: 'btn small ghost', onclick: () => { S.cupOut = true; renderView(); } }, '나가기'),
+      h('div', { class: 'cupfs-title' }, h('b', {}, roundName(cup.size)), h('span', {}, ` ${cup.mi + 1} / ${matches}`)),
+      h('button', { class: 'btn small ghost', onclick: () => { S.settings.cupLayout = layout === 'row' ? 'col' : 'row'; saveSettings(); renderView(); } }, layout === 'row' ? '위아래로' : '좌우로')),
+    h('div', { class: 'cupfs-vs' }, cupSide(cup, a, 0), h('div', { class: 'cupfs-vsmark' }, 'VS'), cupSide(cup, b, 1)));
 }
 
 function cupResult(cup) {
@@ -1835,15 +1859,12 @@ function viewCup() {
   const cup = activeCup();
   const box = h('div', { class: 'view' });
   if (cup) {
-    const a = cup.round[cup.mi * 2], b = cup.round[cup.mi * 2 + 1];
-    const matches = cup.round.length / 2;
-    box.append(
-      h('div', { class: 'cup-head' },
-        h('div', { class: 'cup-round' }, roundName(cup.size)),
-        h('div', { class: 'cup-progress' }, `${cup.mi + 1} / ${matches} 경기 · ${cup.label}`)),
-      h('div', { class: 'cup-vs' }, cupSide(cup, a, 0), h('div', { class: 'vs' }, 'VS'), cupSide(cup, b, 1)),
-      h('p', { class: 'muted small' }, '그림을 누르면 크게 볼 수 있어요. 월드컵 결과는 통계에 들어가지 않아요.'),
-      confirmBtn('이번 월드컵 그만두기', '한 번 더 누르면 지워져요', () => { S.cups = S.cups.filter((x) => x !== cup); saveCups(); renderView(); }, 'btn ghost danger'));
+    if (!S.cupOut) { box.append(cupFull(cup)); return box; }
+    box.append(h('section', { class: 'card' },
+      h('h2', {}, `진행 중: ${roundName(cup.size)} ${cup.mi + 1} / ${cup.round.length / 2} 경기`),
+      h('p', { class: 'muted small' }, `${cup.label} · 월드컵 결과는 통계에 들어가지 않아요.`),
+      h('button', { class: 'btn primary wide', onclick: () => { S.cupOut = false; renderView(); } }, '이어하기'),
+      confirmBtn('이번 월드컵 그만두기', '한 번 더 누르면 지워져요', () => { S.cups = S.cups.filter((x) => x !== cup); saveCups(); renderView(); }, 'btn ghost danger')));
     return box;
   }
   const entrants = cupEntrants();
@@ -1981,6 +2002,7 @@ function renderView() {
   main.append(fn());
   window.scrollTo(0, S.app === 'shuffle' && (S.view === 'result' || S.view === 'fav' || S.view === 'styles') ? y : 0);
   if (S.view === 'result' && S.detail) centerActiveTab();
+  document.body.classList.toggle('cup-full', Boolean(main.querySelector('.cupfs')));
   renderUsage();
   if (S.view === 'settings') store.usage().then((u) => { const el = document.getElementById('usage-box'); if (el && u != null) el.textContent = `폰에 저장된 그림·기록: 약 ${(u / 1048576).toFixed(0)}MB`; });
 }
@@ -2011,6 +2033,7 @@ function renderAll() {
 onBackButton(() => {
   if (V.open) { closeViewer(); return; }
   if (D.open) { closeDrawer(); return; }
+  if (S.view === 'fav' && S.favTab === 'cup' && activeCup() && !S.cupOut) { S.cupOut = true; renderView(); return; }
   if (SH.open) { closeSheet(); return; }
   if (S.app === 'scene') { switchApp('shuffle'); return; }
   if (S.view === 'result' && S.detail) { backToGallery(); return; }

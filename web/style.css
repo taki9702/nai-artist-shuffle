@@ -363,3 +363,24 @@ input[type=range] { width: 100%; accent-color: var(--accent); height: 32px; }
 .rank-thumb { position: relative; padding: 0; border: 0; color: inherit; }
 .rank-name { position: absolute; left: 0; right: 0; bottom: 0; background: #000b; font-size: 12px; padding: 2px 4px; text-align: center; }
 .topn { width: 80px !important; min-height: 40px; padding: 6px 8px; }
+
+/* 월드컵 전체 화면 */
+body.cup-full { overflow: hidden; }
+.cupfs { position: fixed; inset: 0; z-index: 40; background: #000; display: flex; flex-direction: column; padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px); }
+.cupfs-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; }
+.cupfs-top .btn { color: #fff; border-color: #444; }
+.cupfs-title { font-size: 20px; color: #fff; font-variant-numeric: tabular-nums; }
+.cupfs-title b { color: var(--like); font-size: 24px; }
+.cupfs-vs { position: relative; flex: 1; min-height: 0; display: grid; gap: 4px; }
+.cupfs.row .cupfs-vs { grid-template-columns: 1fr 1fr; }
+.cupfs.col .cupfs-vs { grid-template-rows: 1fr 1fr; }
+.cupfs-side { position: relative; min-height: 0; min-width: 0; display: flex; }
+.cupfs-pic { flex: 1; min-width: 0; min-height: 0; padding: 0; border: 0; background: transparent; display: flex; }
+.cupfs-pic img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.cupfs-name { position: absolute; top: 8px; left: 8px; background: #000b; color: #fff; font-weight: 800; font-size: 16px; padding: 4px 10px; border-radius: 8px; pointer-events: none; }
+.cupfs-count { color: var(--muted); font-weight: 700; }
+.cupfs-flip { position: absolute; top: 50%; transform: translateY(-50%); width: 44px; height: 64px; border: 0; border-radius: 10px; background: #0008; color: #fff; font-size: 30px; }
+.cupfs-flip.left { left: 4px; }
+.cupfs-flip.right { right: 4px; }
+.cupfs-pick { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); min-width: 60%; min-height: 52px; border: 0; border-radius: 26px; background: linear-gradient(90deg, var(--accent), var(--accent2)); color: #fff; font-size: 18px; font-weight: 900; box-shadow: 0 4px 16px #000c; }
+.cupfs-vsmark { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 2; background: var(--like); color: #241a00; font-weight: 900; font-size: 16px; border-radius: 999px; padding: 6px 10px; pointer-events: none; box-shadow: 0 2px 10px #000c; }
