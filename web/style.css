@@ -251,3 +251,11 @@ details textarea + textarea { margin-top: 10px; }
 @media (prefers-reduced-motion: reduce) { .spinner, .tab[data-state=run] .dot, .nav-dot { animation: none; } }
 /* 확대 화면에서는 알림이 평가 버튼을 가리지 않게 위쪽에 */
 body.viewer-open .toast { bottom: auto; top: calc(96px + env(safe-area-inset-top, 0px)); }
+
+/* 통계 반영 조합 표시 */
+.kind { display: inline-block; font-size: 12px; font-weight: 800; border-radius: 6px; padding: 1px 7px; margin-left: 6px; vertical-align: middle; }
+.kind.stats { background: color-mix(in srgb, var(--like) 22%, transparent); color: var(--like); }
+.kind.explore { background: color-mix(in srgb, var(--meh) 22%, transparent); color: var(--meh); }
+.combo-title .kind { font-size: 14px; }
+.btn.primary-ish { background: linear-gradient(90deg, var(--accent), var(--accent2)); border: 0; color: #fff; font-weight: 800; }
+#stats-fields { gap: 12px; }

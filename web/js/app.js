@@ -348,6 +348,41 @@ function validateShuffle() {
   return '';
 }
 
+// ---------------------------------------------------------------- 통계 반영
+const STRENGTH = { weak: ['약하게', 0.5], mid: ['보통', 1], strong: ['강하게', 2] };
+
+// 작가마다 출발점: 좋게 본 평균(즐겨찾기 1, 애매함 0.5)에서 시작해, 통계 차이(diff)만큼 더 민다.
+// 평가에 없던 작가는 프롬프트의 지금 가중치. 고정한 작가는 그대로.
+function statsPlan(arts) {
+  const { rows, rated } = computeStats();
+  if (!rated.length) return null;
+  const st = S.settings;
+  const k = (STRENGTH[st.statStrength] || STRENGTH.mid)[1];
+  const by = new Map(rows.map((r) => [r.name, r]));
+  const centers = arts.map((a) => {
+    if (S.locks[a.name]) return a.w;
+    const r = by.get(a.name);
+    if (!r) return a.w;
+    const start = r.like ?? a.w;
+    return Math.min(st.max, Math.max(st.min, start + k * r.diff));
+  });
+  return { centers, rated: rated.length };
+}
+
+// 싫어요 조합과 평균 차이가 0.2 미만이면 너무 비슷하다고 본다.
+function tooCloseToHate(names, w, hates) {
+  for (const f of hates) {
+    let sum = 0, n = 0;
+    names.forEach((name, i) => { if (typeof f.w[name] === 'number') { sum += Math.abs(f.w[name] - w[i]); n++; } });
+    if (n && sum / n < 0.2) return true;
+  }
+  return false;
+}
+
+const KIND = { stats: '통계', explore: '탐색' };
+const kindTag = (c) => (c.kind ? h('span', { class: `kind ${c.kind}` }, KIND[c.kind]) : null);
+const MODE_LABEL = { random: '완전 무작위', vary: '기준에서 흔들기', stats: '통계 반영' };
+
 function startRun() {
   const st = S.settings;
   if (!st.apiKey.trim()) { toast('설정 탭에서 NovelAI API 키를 먼저 넣어 주세요.', 'bad'); S.view = 'settings'; renderAll(); return; }
@@ -356,9 +391,16 @@ function startRun() {
   if (!arts.length) { toast('프롬프트에서 artist: 태그를 찾지 못했어요.', 'bad'); return; }
   const bad = validateShuffle();
   if (bad) { toast(bad, 'bad'); return; }
-  const base = st.mode === 'vary' ? baseWeights(arts) : arts.map((a) => a.w);
   const locked = arts.map((a) => Boolean(S.locks[a.name]));
   const names = arts.map((a) => a.name);
+  let base = st.mode === 'vary' ? baseWeights(arts) : arts.map((a) => a.w);
+  let hates = [];
+  if (st.mode === 'stats') {
+    const plan = statsPlan(arts);
+    if (!plan) { toast('평가한 그림체가 없어서 통계를 반영할 수 없어요. 먼저 즐겨찾기·애매함·싫어요를 눌러 주세요.', 'bad'); return; }
+    base = plan.centers;
+    hates = st.avoidHate ? S.favs.filter((f) => rateOf(f) === 'hate' && f.w) : [];
+  }
   const [width, height] = SIZES[st.size] || [832, 1216];
   const n = Math.max(1, Math.round(st.combos) || 1);
   const k = Math.max(1, Math.min(10, Math.round(st.perCombo)));
@@ -366,7 +408,18 @@ function startRun() {
   const sharedSeeds = Array.from({ length: k }, (_, i) => (st.seedMode === 'fixed' && Number.isFinite(fixed) ? (fixed + i) : randomSeed()));
   const combos = [];
   for (let c = 0; c < n; c++) {
-    const w = shuffleWeights(base, locked, st);
+    let w, kind = '';
+    if (st.mode === 'stats') {
+      // 일부는 탐색용 완전 무작위, 나머지는 통계 출발점에서 흔들기. 싫어요와 너무 비슷하면 다시 만든다.
+      const explore = Math.random() * 100 < (Number(st.explore) || 0);
+      kind = explore ? 'explore' : 'stats';
+      for (let t = 0; t < 40; t++) {
+        w = explore
+          ? shuffleWeights(arts.map((a) => a.w), locked, { ...st, mode: 'random' })
+          : shuffleWeights(base, locked, { ...st, mode: 'vary' });
+        if (!w || !tooCloseToHate(names, w, hates)) break;
+      }
+    } else w = shuffleWeights(base, locked, st);
     if (!w) { toast('잠근 작가 때문에 평균을 맞출 수 없어요. 범위를 넓혀 주세요.', 'bad'); return; }
     S.counter++;
     const seeds = st.seedMode === 'diff' ? Array.from({ length: k }, randomSeed) : sharedSeeds;
@@ -374,9 +427,9 @@ function startRun() {
     if (st.shuffleOrder) {
       const order = shuffledOrder(names.length);
       const cw = order.map((i) => w[i]);
-      combos.push({ no: S.counter, names: order.map((i) => names[i]), weights: cw, prompt: build(reorder(segs, order), cw, { space: st.space }), images });
+      combos.push({ no: S.counter, kind, names: order.map((i) => names[i]), weights: cw, prompt: build(reorder(segs, order), cw, { space: st.space }), images });
     } else {
-      combos.push({ no: S.counter, weights: w, prompt: build(segs, w, { space: st.space }), images });
+      combos.push({ no: S.counter, kind, weights: w, prompt: build(segs, w, { space: st.space }), images });
     }
   }
   store.kvSet('counter', S.counter).catch(() => {});
@@ -763,11 +816,19 @@ function renderShuffleHint() {
   const picked = S.favs.filter((f) => f.pick && rateOf(f) === 'like').map((f) => f.name);
   const bad = validateShuffle();
   el.classList.toggle('bad', Boolean(bad));
-  el.textContent = bad || (st.mode === 'vary'
-    ? `기준: ${picked.length ? `${picked.join(' + ')}의 평균` : '프롬프트의 지금 가중치'}에서 ±${st.jitter}씩 흔들고, 평균을 ${st.avg}로 맞춰요.`
-    : `고정한 작가를 빼고 ${st.min}~${st.max} 사이에서 무작위로 뽑고, 평균을 ${st.avg}로 맞춰요.`);
+  const rated = S.favs.filter((f) => f.w && Object.keys(f.w).length).length;
+  const noStats = st.mode === 'stats' && !rated;
+  el.classList.toggle('bad', Boolean(bad) || noStats);
+  el.textContent = bad || (noStats ? '평가한 그림체가 없어서 통계를 반영할 수 없어요. 결과나 확대 화면에서 즐겨찾기·애매함·싫어요를 먼저 눌러 주세요.'
+    : st.mode === 'stats'
+      ? `평가 ${rated}개의 통계에서 출발해요. 좋았던 작가는 올리고 별로였던 작가는 내려요(반영 강도: ${(STRENGTH[st.statStrength] || STRENGTH.mid)[0]}). ±${st.jitter}씩 흔들고, ${st.explore}%는 탐색용 완전 무작위로 뽑아요.${st.avoidHate ? ' 싫어요와 너무 비슷한 조합은 다시 만들어요.' : ''} 평균은 ${st.avg}로 맞춰요.`
+    : st.mode === 'vary'
+      ? `기준: ${picked.length ? `${picked.join(' + ')}의 평균` : '프롬프트의 지금 가중치'}에서 ±${st.jitter}씩 흔들고, 평균을 ${st.avg}로 맞춰요.`
+      : `고정한 작가를 빼고 ${st.min}~${st.max} 사이에서 무작위로 뽑고, 평균을 ${st.avg}로 맞춰요.`);
   const jit = document.getElementById('jitter-field');
-  if (jit) jit.hidden = st.mode !== 'vary';
+  if (jit) jit.hidden = st.mode === 'random';
+  const sf = document.getElementById('stats-fields');
+  if (sf) sf.hidden = st.mode !== 'stats';
   const fixed = document.getElementById('fixed-field');
   if (fixed) fixed.hidden = st.seedMode !== 'fixed';
 }
@@ -804,11 +865,15 @@ function viewMake() {
     h('section', { class: 'card' },
       h('h2', {}, '섞기'),
       h('div', { class: 'grid' },
-        field('방식', select('mode', [['random', '완전 무작위'], ['vary', '기준에서 흔들기']], renderShuffleHint)),
+        field('방식', select('mode', [['random', '완전 무작위'], ['vary', '기준에서 흔들기'], ['stats', '통계 반영']], renderShuffleHint)),
         field('평균', num('avg', { step: 0.05, min: 0.1, max: 3 })),
         field('최소', num('min', { step: 0.1, min: 0, max: 3 })),
         field('최대', num('max', { step: 0.1, min: 0.1, max: 3 })),
         h('div', { id: 'jitter-field' }, field('흔들 폭 ±', num('jitter', { step: 0.05, min: 0.05, max: 1.5 }))),
+        h('div', { id: 'stats-fields', class: 'span2 grid' },
+          field('반영 강도', select('statStrength', Object.entries(STRENGTH).map(([k, [label]]) => [k, label]), renderShuffleHint)),
+          field('탐색 비율 %', num('explore', { step: 5, min: 0, max: 100, int: true })),
+          h('label', { class: 'check span2' }, h('input', { type: 'checkbox', id: 'in-avoidHate', checked: S.settings.avoidHate, onchange: (e) => { S.settings.avoidHate = e.target.checked; saveSettings(); renderShuffleHint(); } }), h('span', {}, '싫어요와 비슷한 조합 피하기'))),
         field('조합 수', num('combos', { step: 1, min: 1, int: true })),
         field('조합당 장수', num('perCombo', { step: 1, min: 1, max: 10, int: true })),
         h('label', { class: 'check span2' }, h('input', { type: 'checkbox', id: 'in-shuffleOrder', checked: st.shuffleOrder, onchange: (e) => { S.settings.shuffleOrder = e.target.checked; saveSettings(); } }), h('span', {}, '조합마다 작가 순서도 섞기')),
@@ -889,7 +954,7 @@ function centerActiveTab() {
 
 function runHead(run, extra) {
   return h('div', { class: 'run-head' },
-    h('div', {}, h('b', {}, when(run.created)), h('span', { class: 'muted small' }, ` · ${run.combos.length}조합 · ${run.mode === 'vary' ? '기준에서 흔들기' : '완전 무작위'} · ${{ same: '같은 시드', diff: '다른 시드', fixed: '지정 시드' }[run.seedMode] || ''}${run.shuffleOrder ? ' · 순서도 섞음' : ''}`)),
+    h('div', {}, h('b', {}, when(run.created)), h('span', { class: 'muted small' }, ` · ${run.combos.length}조합 · ${MODE_LABEL[run.mode] || '완전 무작위'} · ${{ same: '같은 시드', diff: '다른 시드', fixed: '지정 시드' }[run.seedMode] || ''}${run.shuffleOrder ? ' · 순서도 섞음' : ''}`)),
     extra);
 }
 
@@ -918,7 +983,7 @@ function viewGallery(run) {
     if (fv) pic.append(h('span', { class: `g-badge ${rateOf(fv)}` }, `${RATES[rateOf(fv)].icon}`));
     return h('button', { class: 'g-card', onclick: () => { S.galleryY = window.scrollY; S.tab = i; S.detail = true; renderView(); window.scrollTo(0, 0); } },
       pic,
-      h('span', { class: 'g-cap' }, h('b', {}, `${c.no}`), h('span', { class: 'muted' }, ` ${done}/${c.images.length}장`)),
+      h('span', { class: 'g-cap' }, h('b', {}, `${c.no}`), kindTag(c), h('span', { class: 'muted' }, ` ${done}/${c.images.length}장`)),
       h('span', { class: 'g-top' }, top.map(([w, n]) => `${n} ${fmt(w)}`).join(' · ')));
   });
   return h('div', { class: 'view' },
@@ -944,7 +1009,7 @@ function viewResult() {
   const panel = h('div', { class: 'panel', ontouchstart: (e) => { sx = e.touches[0].clientX; sy = e.touches[0].clientY; },
     ontouchend: (e) => { const dx = e.changedTouches[0].clientX - sx, dy = e.changedTouches[0].clientY - sy; if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.6) setTab(S.tab + (dx < 0 ? 1 : -1)); } },
   h('div', { class: 'row between' },
-    h('h2', { class: 'combo-title' }, `조합 ${combo.no}`),
+    h('h2', { class: 'combo-title' }, `조합 ${combo.no}`, kindTag(combo)),
     h('div', { class: 'seg', role: 'group', 'aria-label': '한 줄에 보일 그림 수' }, [1, 2, 3].map((n) => h('button', { class: `seg-b${cols === n ? ' on' : ''}`, onclick: () => { S.settings.cols = n; saveSettings(); renderView(); } }, `${n}열`)))),
   rateButtons(fav ? rateOf(fav) : null, (r) => rateCombo(run, combo, r)),
   h('div', { class: 'top small' }, '주도 ', topArtists(namesOf(run, combo), combo.weights).map(([w, n], i) => [i ? ' · ' : '', h('b', {}, n), ` ${fmt(w)}`])),
@@ -1118,7 +1183,8 @@ function viewStats() {
   const { rows, rated } = computeStats();
   const box = h('div', { class: 'view' });
   box.append(h('section', { class: 'card' },
-    h('h2', {}, '평가한 그림체'),
+    h('div', { class: 'row between' }, h('h2', {}, '평가한 그림체'),
+      h('button', { class: 'btn small primary-ish', onclick: () => { S.settings.mode = 'stats'; saveSettings(); S.view = 'make'; renderAll(); window.scrollTo(0, 0); setTimeout(() => document.getElementById('in-mode')?.scrollIntoView({ block: 'center' }), 50); toast('섞기 방식을 "통계 반영"으로 바꿨어요', 'ok'); } }, '통계로 뽑기')),
     h('div', { class: 'stat-counts' },
       h('div', { class: 'stat-count like' }, h('b', {}, String(counts.like)), h('span', {}, '★ 즐겨찾기')),
       h('div', { class: 'stat-count meh' }, h('b', {}, String(counts.meh)), h('span', {}, '◐ 애매함')),
