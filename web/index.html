@@ -12,10 +12,12 @@
 <script type="importmap">{ "imports": { "@capacitor/core": "./js/vendor/capacitor-core.js" } }</script>
 </head>
 <body>
-<header class="appbar"><img src="icon-192.png" alt="" width="26" height="26"><span>NAI 작가 셔플</span></header>
+<header id="appbar" class="appbar"></header>
 <div id="status" class="status" hidden></div>
 <main id="main"></main>
 <nav id="nav" class="nav" aria-label="메뉴"></nav>
+<div id="sheet" class="sheet" hidden></div>
+<div id="drawer" class="drawer" hidden></div>
 <div id="viewer" class="viewer" hidden role="dialog" aria-label="그림 보기"></div>
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 <div id="boot" class="boot"><div class="spinner"></div></div>
