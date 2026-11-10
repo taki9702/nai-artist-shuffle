@@ -96,7 +96,10 @@ async function load() {
     if (changed) await store.runPut(run);
   }
   S.currentRunId = S.runs[0]?.id || null;
-  if (!favs) await store.kvSet('favs', S.favs);
+  // 예전에 평가한 조합에도 출처(통계/탐색/무작위)를 채워 둔다. 회차를 지워 알 수 없으면 무작위로 본다.
+  let filled = false;
+  for (const f of S.favs) if (!f.kind && f.src) { const t = favTarget(f); f.kind = t?.combo.kind || 'random'; filled = true; }
+  if (!favs || filled) await store.kvSet('favs', S.favs);
 }
 
 let saveTimer;
@@ -356,20 +359,77 @@ const STRENGTH = { weak: ['약하게', 0.5], mid: ['보통', 1], strong: ['강�
 
 // 작가마다 출발점: 좋게 본 평균(즐겨찾기 1, 애매함 0.5)에서 시작해, 통계 차이(diff)만큼 더 민다.
 // 평가에 없던 작가는 프롬프트의 지금 가중치. 고정한 작가는 그대로.
+// 평가가 어디서 나온 조합인지: 통계로 뽑힌 조합의 평가는 절반만 반영해 자기 강화를 줄인다.
+function favKind(f) { return f.kind || favTarget(f)?.combo.kind || 'random'; }
+const originFactor = (f) => (favKind(f) === 'stats' ? 0.5 : 1);
+const meanDist = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += Math.abs(a[i] - b[i]); return a.length ? s / a.length : 0; };
+
+// 좋게 본 조합(즐겨찾기·애매함)을 비슷한 것끼리 묶어 '취향 계열'로 나눈다. 평균 하나로 뭉개지지 않게.
+// 거리 = 작가별 가중치 차이의 평균. 0.25 안쪽이면 같은 계열. 계열은 최대 6개.
+function tasteClusters(names, fallback) {
+  const items = S.favs
+    .filter((f) => (rateOf(f) === 'like' || rateOf(f) === 'meh') && f.w && Object.keys(f.w).length)
+    .map((f) => ({ f, v: names.map((n, i) => (typeof f.w[n] === 'number' ? f.w[n] : fallback[i])), wt: RATES[rateOf(f)].value * originFactor(f) }))
+    .sort((a, b) => b.wt - a.wt);
+  const clusters = [];
+  const recenter = (c) => {
+    const tw = c.items.reduce((x, it) => x + it.wt, 0);
+    c.center = names.map((_, i) => c.items.reduce((x, it) => x + it.v[i] * it.wt, 0) / tw);
+    c.weight = tw;
+  };
+  for (const it of items) {
+    let best = null, bd = Infinity;
+    for (const c of clusters) { const d = meanDist(it.v, c.center); if (d < bd) { bd = d; best = c; } }
+    if (best && bd < 0.25) { best.items.push(it); recenter(best); } else { const c = { items: [it] }; recenter(c); clusters.push(c); }
+  }
+  while (clusters.length > 6) {
+    clusters.sort((a, b) => b.weight - a.weight);
+    const small = clusters.pop();
+    let best = clusters[0], bd = Infinity;
+    for (const c of clusters) { const d = meanDist(small.center, c.center); if (d < bd) { bd = d; best = c; } }
+    best.items.push(...small.items);
+    recenter(best);
+  }
+  return clusters.sort((a, b) => b.weight - a.weight);
+}
+
+// 통계 반영의 출발점들: 계열마다 중심 + 작가별 통계 차이 × 반영 강도. 고정한 작가는 그대로.
 function statsPlan(arts) {
   const { rows, rated } = computeStats();
   if (!rated.length) return null;
   const st = S.settings;
   const k = (STRENGTH[st.statStrength] || STRENGTH.mid)[1];
   const by = new Map(rows.map((r) => [r.name, r]));
-  const centers = arts.map((a) => {
+  const names = arts.map((a) => a.name);
+  const now = arts.map((a) => a.w);
+  const push = (center) => arts.map((a, i) => {
     if (S.locks[a.name]) return a.w;
     const r = by.get(a.name);
-    if (!r) return a.w;
-    const start = r.like ?? a.w;
-    return Math.min(st.max, Math.max(st.min, start + k * r.diff));
+    return Math.min(st.max, Math.max(st.min, center[i] + (r ? k * r.diff : 0)));
   });
-  return { centers, rated: rated.length };
+  const groups = tasteClusters(names, now);
+  const centers = groups.length ? groups.map((g) => push(g.center)) : [push(now)];
+  const likes = S.favs.filter((f) => (rateOf(f) === 'like' || rateOf(f) === 'meh') && f.w);
+  return { centers, groups, likes, rated: rated.length };
+}
+
+// 이미 좋아한 조합과 거의 같으면(평균 차이 0.15 미만) 같은 자리를 맴도는 것이라 다시 만든다.
+function tooCloseToLikes(names, w, likes) {
+  for (const f of likes) {
+    let sum = 0, n = 0;
+    names.forEach((name, i) => { if (typeof f.w[name] === 'number') { sum += Math.abs(f.w[name] - w[i]); n++; } });
+    if (n && sum / n < 0.15) return true;
+  }
+  return false;
+}
+
+// 작가 빼기: 고정하지 않은 작가 중 n명을 0으로.
+function dropout(base, locked, n) {
+  const free = base.map((_, i) => i).filter((i) => !locked[i]);
+  const pick = shuffledOrder(free.length).slice(0, Math.min(n, Math.max(0, free.length - 2))).map((j) => free[j]);
+  const b = base.slice(), l = locked.slice();
+  for (const i of pick) { b[i] = 0; l[i] = true; }
+  return { base: b, locked: l, dropped: pick };
 }
 
 // 싫어요 조합과 평균 차이가 0.2 미만이면 너무 비슷하다고 본다.
@@ -383,7 +443,7 @@ function tooCloseToHate(names, w, hates) {
 }
 
 const KIND = { stats: '통계', explore: '탐색' };
-const kindTag = (c) => (c.kind ? h('span', { class: `kind ${c.kind}` }, KIND[c.kind]) : null);
+const kindTag = (c) => (c.kind ? h('span', { class: `kind ${c.kind}` }, c.kind === 'stats' && c.cluster ? `통계·계열${c.cluster}` : KIND[c.kind]) : null);
 const MODE_LABEL = { random: '완전 무작위', vary: '기준에서 흔들기', stats: '통계 반영' };
 
 function startRun() {
@@ -398,12 +458,14 @@ function startRun() {
   const names = arts.map((a) => a.name);
   let base = st.mode === 'vary' ? baseWeights(arts) : arts.map((a) => a.w);
   let hates = [];
+  let plan_ = null;
   if (st.mode === 'stats') {
     const plan = statsPlan(arts);
     if (!plan) { toast('평가한 그림체가 없어서 통계를 반영할 수 없어요. 먼저 즐겨찾기·애매함·싫어요를 눌러 주세요.', 'bad'); return; }
-    base = plan.centers;
+    plan_ = plan;
     hates = st.avoidHate ? S.favs.filter((f) => rateOf(f) === 'hate' && f.w) : [];
   }
+  let statsTurn = 0;
   const [width, height] = SIZES[st.size] || [832, 1216];
   const n = Math.max(1, Math.round(st.combos) || 1);
   const k = Math.max(1, Math.min(10, Math.round(st.perCombo)));
@@ -411,18 +473,26 @@ function startRun() {
   const sharedSeeds = Array.from({ length: k }, (_, i) => (st.seedMode === 'fixed' && Number.isFinite(fixed) ? (fixed + i) : randomSeed()));
   const combos = [];
   for (let c = 0; c < n; c++) {
-    let w, kind = '';
+    let w, kind = '', cluster = 0;
+    const drops = st.dropout ? Math.max(0, Math.round(st.dropCount) || 0) : 0;
+    const gen = (b, l, opts) => { const d = drops ? dropout(b, l, drops) : { base: b, locked: l }; return shuffleWeights(d.base, d.locked, opts); };
     if (st.mode === 'stats') {
-      // 일부는 탐색용 완전 무작위, 나머지는 통계 출발점에서 흔들기. 싫어요와 너무 비슷하면 다시 만든다.
+      // 일부는 탐색용 완전 무작위, 나머지는 취향 계열을 돌아가며 출발점으로 삼아 흔든다.
+      // 싫어요와 비슷하거나, 이미 좋아한 조합과 거의 같으면 다시 만든다.
       const explore = Math.random() * 100 < (Number(st.explore) || 0);
       kind = explore ? 'explore' : 'stats';
+      const ci = explore ? -1 : statsTurn++ % plan_.centers.length;
+      cluster = explore ? 0 : ci + 1;
       for (let t = 0; t < 40; t++) {
         w = explore
-          ? shuffleWeights(arts.map((a) => a.w), locked, { ...st, mode: 'random' })
-          : shuffleWeights(base, locked, { ...st, mode: 'vary' });
-        if (!w || !tooCloseToHate(names, w, hates)) break;
+          ? gen(arts.map((a) => a.w), locked, { ...st, mode: 'random' })
+          : gen(plan_.centers[ci], locked, { ...st, mode: 'vary' });
+        if (!w) break;
+        if (tooCloseToHate(names, w, hates)) continue;
+        if (!explore && tooCloseToLikes(names, w, plan_.likes)) continue;
+        break;
       }
-    } else w = shuffleWeights(base, locked, st);
+    } else w = gen(base, locked, st);
     if (!w) { toast('잠근 작가 때문에 평균을 맞출 수 없어요. 범위를 넓혀 주세요.', 'bad'); return; }
     S.counter++;
     const seeds = st.seedMode === 'diff' ? Array.from({ length: k }, randomSeed) : sharedSeeds;
@@ -430,9 +500,9 @@ function startRun() {
     if (st.shuffleOrder) {
       const order = shuffledOrder(names.length);
       const cw = order.map((i) => w[i]);
-      combos.push({ no: S.counter, kind, names: order.map((i) => names[i]), weights: cw, prompt: build(reorder(segs, order), cw, { space: st.space }), images });
+      combos.push({ no: S.counter, kind, cluster, names: order.map((i) => names[i]), weights: cw, prompt: build(reorder(segs, order), cw, { space: st.space }), images });
     } else {
-      combos.push({ no: S.counter, kind, weights: w, prompt: build(segs, w, { space: st.space }), images });
+      combos.push({ no: S.counter, kind, cluster, weights: w, prompt: build(segs, w, { space: st.space }), images });
     }
   }
   store.kvSet('counter', S.counter).catch(() => {});
@@ -518,7 +588,7 @@ function rateCombo(run, combo, rate) {
     S.favs.unshift({
       id: `f${Date.now()}`, src: favKey(run, combo), name: `조합 ${combo.no}`, note: '', pick: false, rate,
       order: names.slice(), w: Object.fromEntries(names.map((n, i) => [n, combo.weights[i]])),
-      imgs: doneImgs(combo), ratio: [run.params.width, run.params.height], created: Date.now(),
+      imgs: doneImgs(combo), ratio: [run.params.width, run.params.height], created: Date.now(), kind: combo.kind || 'random',
     });
     toast(`조합 ${combo.no} → ${label}`, 'ok');
   }
@@ -812,6 +882,12 @@ function renderArtistList(box) {
   });
 }
 
+function statsGroupsCount() {
+  const arts = artists(segsNow());
+  if (!arts.length) return 0;
+  return Math.max(1, tasteClusters(arts.map((a) => a.name), arts.map((a) => a.w)).length);
+}
+
 function renderShuffleHint() {
   const el = document.getElementById('shuffle-hint');
   if (!el) return;
@@ -824,7 +900,7 @@ function renderShuffleHint() {
   el.classList.toggle('bad', Boolean(bad) || noStats);
   el.textContent = bad || (noStats ? '평가한 그림체가 없어서 통계를 반영할 수 없어요. 결과나 확대 화면에서 즐겨찾기·애매함·싫어요를 먼저 눌러 주세요.'
     : st.mode === 'stats'
-      ? `평가 ${rated}개의 통계에서 출발해요. 좋았던 작가는 올리고 별로였던 작가는 내려요(반영 강도: ${(STRENGTH[st.statStrength] || STRENGTH.mid)[0]}). ±${st.jitter}씩 흔들고, ${st.explore}%는 탐색용 완전 무작위로 뽑아요.${st.avoidHate ? ' 싫어요와 너무 비슷한 조합은 다시 만들어요.' : ''} 평균은 ${st.avg}로 맞춰요.`
+      ? `평가 ${rated}개를 비슷한 것끼리 묶은 취향 계열 ${statsGroupsCount()}개를 돌아가며 출발점으로 써요. 좋았던 작가는 올리고 별로였던 작가는 내려요(반영 강도: ${(STRENGTH[st.statStrength] || STRENGTH.mid)[0]}). ±${st.jitter}씩 흔들고, ${st.explore}%는 탐색용 완전 무작위예요. 이미 좋아한 조합과 거의 같은 조합${st.avoidHate ? '과 싫어요와 비슷한 조합' : ''}은 다시 만들어요.${st.dropout ? ` 조합마다 작가 ${st.dropCount}명을 빼요.` : ''} 평균은 ${st.avg}로 맞춰요.`
     : st.mode === 'vary'
       ? `기준: ${picked.length ? `${picked.join(' + ')}의 평균` : '프롬프트의 지금 가중치'}에서 ±${st.jitter}씩 흔들고, 평균을 ${st.avg}로 맞춰요.`
       : `고정한 작가를 빼고 ${st.min}~${st.max} 사이에서 무작위로 뽑고, 평균을 ${st.avg}로 맞춰요.`);
@@ -880,6 +956,8 @@ function viewMake() {
           h('label', { class: 'check span2' }, h('input', { type: 'checkbox', id: 'in-avoidHate', checked: S.settings.avoidHate, onchange: (e) => { S.settings.avoidHate = e.target.checked; saveSettings(); renderShuffleHint(); } }), h('span', {}, '싫어요와 비슷한 조합 피하기'))),
         field('조합 수', num('combos', { step: 1, min: 1, int: true })),
         field('조합당 장수', num('perCombo', { step: 1, min: 1, max: 10, int: true })),
+        h('label', { class: 'check span2' }, h('input', { type: 'checkbox', id: 'in-dropout', checked: st.dropout, onchange: (e) => { S.settings.dropout = e.target.checked; saveSettings(); renderShuffleHint(); const f = document.getElementById('drop-field'); if (f) f.hidden = !e.target.checked; } }), h('span', {}, '작가 빼기 (조합마다 몇 명을 0으로)')),
+        h('div', { id: 'drop-field', hidden: !st.dropout }, field('뺄 작가 수', num('dropCount', { step: 1, min: 1, max: 10, int: true }))),
         h('label', { class: 'check span2' }, h('input', { type: 'checkbox', id: 'in-shuffleOrder', checked: st.shuffleOrder, onchange: (e) => { S.settings.shuffleOrder = e.target.checked; saveSettings(); } }), h('span', {}, '조합마다 작가 순서도 섞기')),
         field('시드', select('seedMode', [['same', '조합끼리 같은 시드'], ['diff', '매번 다른 시드'], ['fixed', '시드 직접 지정']], renderShuffleHint)),
         h('div', { id: 'fixed-field' }, field('시작 시드', h('input', { type: 'number', id: 'in-fixedSeed', inputmode: 'numeric', value: st.fixedSeed, oninput: (e) => { S.settings.fixedSeed = e.target.value; saveSettings(); } }), '장마다 1씩 늘려요'))),
@@ -1154,9 +1232,10 @@ function computeStats() {
       if (typeof w !== 'number') continue;
       const r = rateOf(f);
       aw += w; ac++;
-      if (r === 'like' || r === 'meh') { const v = RATES[r].value; lw += w * v; lv += v; }
+      const o = originFactor(f);
+      if (r === 'like' || r === 'meh') { const v = RATES[r].value * o; lw += w * v; lv += v; }
       if (r === 'meh') { mw += w; mc++; }
-      if (r === 'hate') { hw += w; hc++; }
+      if (r === 'hate') { hw += w * o; hc += o; }
     }
     const like = lv ? lw / lv : null;
     const meh = mc ? mw / mc : null;
@@ -1193,9 +1272,20 @@ function viewStats() {
       h('div', { class: 'stat-count like' }, h('b', {}, String(counts.like)), h('span', {}, '★ 즐겨찾기')),
       h('div', { class: 'stat-count meh' }, h('b', {}, String(counts.meh)), h('span', {}, '◐ 애매함')),
       h('div', { class: 'stat-count hate' }, h('b', {}, String(counts.hate)), h('span', {}, '✕ 싫어요'))),
-    h('p', { class: 'muted small' }, '작가마다 "좋게 본 그림체에서의 평균 가중치"에서 "싫어요 그림체에서의 평균 가중치"를 뺀 값이에요. +면 그 작가를 세게 넣을수록 마음에 들었다는 뜻이에요. 즐겨찾기는 1, 애매함은 0.5만큼 반영해요(좋은 점과 아쉬운 점이 섞여 있어서). 싫어요가 없으면 평가한 전체 평균과 비교해요.'),
+    h('p', { class: 'muted small' }, '작가마다 "좋게 본 그림체에서의 평균 가중치"에서 "싫어요 그림체에서의 평균 가중치"를 뺀 값이에요. +면 그 작가를 세게 넣을수록 마음에 들었다는 뜻이에요. 즐겨찾기는 1, 애매함은 0.5만큼 반영해요(좋은 점과 아쉬운 점이 섞여 있어서). 통계로 뽑힌 조합의 평가는 한쪽으로 굳지 않게 절반만 반영해요. 싫어요가 없으면 평가한 전체 평균과 비교해요.'),
     rated.length < 10 ? h('p', { class: 'hint' }, `아직 ${rated.length}개라 참고만 하세요. 10개 이상 평가하면 믿을 만해져요.`) : null));
   if (!rows.length) { box.append(h('section', { class: 'card' }, h('p', { class: 'empty' }, '평가한 그림체가 생기면 작가별 통계가 나와요.'))); return box; }
+  const arts = artists(segsNow());
+  const groups = arts.length ? tasteClusters(arts.map((a) => a.name), arts.map((a) => a.w)) : [];
+  if (groups.length) {
+    box.append(h('section', { class: 'card' },
+      h('h2', {}, `취향 계열 ${groups.length}개`),
+      h('p', { class: 'muted small' }, '좋게 본 그림체를 비슷한 것끼리 묶었어요. 통계 반영으로 뽑을 때 계열을 돌아가며 출발점으로 써서, 한 가지로 굳지 않게 해요.'),
+      groups.map((g, i) => h('div', { class: 'cluster' },
+        h('div', { class: 'cluster-head' }, h('b', {}, `계열 ${i + 1}`), h('span', { class: 'muted' }, ` · ${g.items.length}개`)),
+        h('div', { class: 'cluster-members' }, g.items.map((it) => it.f.name).join(', ')),
+        h('div', { class: 'top' }, '주도 ', topArtists(arts.map((a) => a.name), g.center, 3).map(([w, n], j) => [j ? ' · ' : '', h('b', {}, n), ` ${fmt(Math.round(w * 10) / 10)}`]))))));
+  }
   const max = Math.max(...rows.map((r) => Math.abs(r.diff)), 0.01);
   const pos = rows.filter((r) => r.diff > 0.005).slice(0, 5);
   const neg = rows.filter((r) => r.diff < -0.005).slice(-5).reverse();

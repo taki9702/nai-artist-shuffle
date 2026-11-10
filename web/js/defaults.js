@@ -61,6 +61,8 @@ export const DEFAULT_SETTINGS = {
   statStrength: 'mid',
   explore: 20,
   avoidHate: true,
+  dropout: false,
+  dropCount: 3,
   fixedSeed: '',
   space: true,
   cols: 2,

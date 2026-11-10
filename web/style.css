@@ -278,3 +278,8 @@ body.viewer-open .toast { bottom: auto; top: calc(96px + env(safe-area-inset-top
 .usage-note { font-size: 14px; color: var(--muted); }
 .usage-note.warn { color: #ffa94d; font-weight: 700; }
 .card .usage { background: var(--panel2); }
+
+/* 취향 계열 */
+.cluster { background: var(--panel2); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+.cluster-head { font-size: 16px; }
+.cluster-members { font-size: 14px; color: var(--muted); }
