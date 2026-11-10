@@ -382,5 +382,12 @@ body.cup-full { overflow: hidden; }
 .cupfs-flip { position: absolute; top: 50%; transform: translateY(-50%); width: 44px; height: 64px; border: 0; border-radius: 10px; background: #0008; color: #fff; font-size: 30px; }
 .cupfs-flip.left { left: 4px; }
 .cupfs-flip.right { right: 4px; }
-.cupfs-pick { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); min-width: 60%; min-height: 52px; border: 0; border-radius: 26px; background: linear-gradient(90deg, var(--accent), var(--accent2)); color: #fff; font-size: 18px; font-weight: 900; box-shadow: 0 4px 16px #000c; }
+.cupfs-pic { touch-action: pan-y; }
+.cupfs-bottom { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 8px 10px 10px; }
+.cupfs-pick { min-height: 58px; border: 0; border-radius: 14px; color: #fff; font-size: 20px; font-weight: 900; }
+.cupfs-pick.t0 { background: var(--accent); }
+.cupfs-pick.t1 { background: var(--accent2); }
+.cupfs-tag { display: inline-block; min-width: 24px; text-align: center; border-radius: 6px; margin-right: 6px; color: #fff; }
+.cupfs-tag.t0 { background: var(--accent); }
+.cupfs-tag.t1 { background: var(--accent2); }
 .cupfs-vsmark { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 2; background: var(--like); color: #241a00; font-weight: 900; font-size: 16px; border-radius: 999px; padding: 6px 10px; pointer-events: none; box-shadow: 0 2px 10px #000c; }

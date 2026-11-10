@@ -1803,13 +1803,22 @@ function cupSide(cup, src, side) {
   const i = ((cupPick[src] || 0) % n + n) % n;
   const img = h('img', { alt: `${s.title} 그림 ${i + 1}` });
   urlFor(s.imgs[i].id).then((u) => { if (u) img.src = u; });
-  const flip = (d) => (e) => { e.stopPropagation(); cupPick[src] = i + d; renderView(); };
+  const flip = (d) => (e) => { e?.stopPropagation(); cupPick[src] = i + d; renderView(); };
+  // 그림을 좌우로 밀면 그 그림체의 다른 그림으로 넘어간다. 그냥 누르면 크게 보기.
+  let sx = 0, sy = 0, swiped = false;
+  const pic = h('button', { class: 'cupfs-pic', 'aria-label': `${s.title} 크게 보기`,
+    ontouchstart: (e) => { sx = e.touches[0].clientX; sy = e.touches[0].clientY; swiped = false; },
+    ontouchend: (e) => {
+      const dx = e.changedTouches[0].clientX - sx, dy = e.changedTouches[0].clientY - sy;
+      if (n > 1 && Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.4) { swiped = true; flip(dx < 0 ? 1 : -1)(); }
+    },
+    onclick: () => { if (swiped) { swiped = false; return; } openViewer([seqItemOfStyle(s)], 0, i, 'cup'); } }, img);
+  const tag = side === 0 ? 'A' : 'B';
   return h('div', { class: `cupfs-side s${side}` },
-    h('button', { class: 'cupfs-pic', 'aria-label': `${s.title} 크게 보기`, onclick: () => openViewer([seqItemOfStyle(s)], 0, i, 'cup') }, img),
-    h('div', { class: 'cupfs-name' }, s.title, n > 1 ? h('span', { class: 'cupfs-count' }, ` ${i + 1}/${n}`) : null),
+    pic,
+    h('div', { class: 'cupfs-name' }, h('span', { class: `cupfs-tag t${side}` }, tag), s.title, n > 1 ? h('span', { class: 'cupfs-count' }, ` ${i + 1}/${n}`) : null),
     n > 1 ? h('button', { class: 'cupfs-flip left', onclick: flip(-1), 'aria-label': '이전 그림' }, '‹') : null,
-    n > 1 ? h('button', { class: 'cupfs-flip right', onclick: flip(1), 'aria-label': '다음 그림' }, '›') : null,
-    h('button', { class: 'cupfs-pick', onclick: () => pickCup(cup, side) }, '이걸로 ✓'));
+    n > 1 ? h('button', { class: 'cupfs-flip right', onclick: flip(1), 'aria-label': '다음 그림' }, '›') : null);
 }
 
 function cupFull(cup) {
@@ -1822,7 +1831,10 @@ function cupFull(cup) {
       h('button', { class: 'btn small ghost', onclick: () => { S.cupOut = true; renderView(); } }, '나가기'),
       h('div', { class: 'cupfs-title' }, h('b', {}, roundName(cup.size)), h('span', {}, ` ${cup.mi + 1} / ${matches}`)),
       h('button', { class: 'btn small ghost', onclick: () => { S.settings.cupLayout = layout === 'row' ? 'col' : 'row'; saveSettings(); renderView(); } }, layout === 'row' ? '위아래로' : '좌우로')),
-    h('div', { class: 'cupfs-vs' }, cupSide(cup, a, 0), h('div', { class: 'cupfs-vsmark' }, 'VS'), cupSide(cup, b, 1)));
+    h('div', { class: 'cupfs-vs' }, cupSide(cup, a, 0), h('div', { class: 'cupfs-vsmark' }, 'VS'), cupSide(cup, b, 1)),
+    h('div', { class: 'cupfs-bottom' },
+      h('button', { class: 'cupfs-pick t0', onclick: () => pickCup(cup, 0) }, 'A 선택'),
+      h('button', { class: 'cupfs-pick t1', onclick: () => pickCup(cup, 1) }, 'B 선택')));
 }
 
 function cupResult(cup) {
