@@ -6,7 +6,8 @@ import { DEFAULT_SETTINGS, DEFAULT_FAVS } from './defaults.js';
 import { parse, artists, build, artistLine, shuffleWeights, topArtists, fmt, reorder, orderByNames, shuffledOrder } from './shuffle.js';
 import { MODELS, SAMPLERS, SIZES, RETRY_STATUSES, RETRY_DELAYS, AUTH_STATUSES, generateImage, fetchSubscription, randomSeed, buildPayload, isFreeForOpus, IMAGES_PER_PERCENT } from './nai.js';
 import * as store from './store.js';
-import { initScene, loadScene, viewScene, renderSheet as renderSceneSheet, takeResult, syncStatus, sceneBack, isSceneKey, renderGoBar } from './scene.js';
+import { initScene, loadScene, viewScene, renderSheet as renderSceneSheet, takeResult, syncStatus, sceneBack, isSceneKey, renderGoBar, sceneImages } from './scene.js';
+import { initClean, viewClean, cleanBack } from './clean.js';
 import {
   native, Filesystem, toBase64, http, copyToClipboard, openExternal, downloadBlob, onBackButton, minimizeApp,
   styleStatusBar, keepAwake, backgroundWork, backgroundNotice, askNotifications, batteryState, shareFile, Gen, fromBase64,
@@ -96,7 +97,7 @@ async function load() {
   S.meta = meta && typeof meta === 'object' ? meta : {};
   S.folders = Array.isArray(folders) ? folders : [];
   S.cups = Array.isArray(cups) ? cups : [];
-  S.app = app === 'scene' ? 'scene' : 'shuffle';
+  S.app = app === 'scene' || app === 'clean' ? app : 'shuffle';
   document.documentElement.dataset.app = S.app;
   S.settings = { ...DEFAULT_SETTINGS, ...(settings || {}) };
   S.locks = locks || {};
@@ -1959,6 +1960,7 @@ function tasteGroups(names, fallback) {
 const APPS = [
   { id: 'shuffle', title: '작가 셔플', desc: '그림체 탐색 · 뽑기 · 결과 · 기록 · 즐겨찾기 · 그림체', icon: '🎨' },
   { id: 'scene', title: '상황 뽑기', desc: 'NAI 화면처럼 생성 · 여러 장 예약 · 상황 노트', icon: '🎬' },
+  { id: 'clean', title: 'EXIF 제거', desc: '메타데이터 지우고 랜덤 이름으로 새로 저장 · JPG/PNG/WEBP', icon: '🧹' },
 ];
 const D = { open: false };
 function openDrawer() { D.open = true; renderDrawer(); }
@@ -2069,7 +2071,7 @@ function renderView() {
   const main = document.getElementById('main');
   const y = window.scrollY;
   main.innerHTML = '';
-  const fn = S.app === 'scene' ? viewScene : { make: viewMake, result: viewResult, history: viewHistory, fav: viewFavs, styles: viewStyles, settings: viewSettings }[S.view];
+  const fn = S.app === 'scene' ? viewScene : S.app === 'clean' ? viewClean : { make: viewMake, result: viewResult, history: viewHistory, fav: viewFavs, styles: viewStyles, settings: viewSettings }[S.view];
   main.append(fn());
   window.scrollTo(0, S.app === 'shuffle' && (S.view === 'result' || S.view === 'fav' || S.view === 'styles') ? y : 0);
   if (S.view === 'result' && S.detail) centerActiveTab();
@@ -2081,8 +2083,8 @@ function renderView() {
 function renderNav() {
   const nav = document.getElementById('nav');
   nav.innerHTML = '';
-  nav.hidden = S.app === 'scene';
-  if (S.app === 'scene') return;
+  nav.hidden = S.app !== 'shuffle';
+  if (S.app !== 'shuffle') return;
   nav.style.gridTemplateColumns = `repeat(${VIEWS.length}, 1fr)`;
   for (const [id, label] of VIEWS) {
     nav.append(h('button', { class: `nav-b${S.view === id ? ' on' : ''}`, 'aria-current': S.view === id ? 'page' : null,
@@ -2102,12 +2104,13 @@ function renderAll() {
 onBackButton(() => {
   if (CM.open) { closeCopyMenu(); return; }
   if (S.app === 'scene' && sceneBack()) return;
+  if (S.app === 'clean' && cleanBack()) return;
   if (V.open) { closeViewer(); return; }
   if (D.open) { closeDrawer(); return; }
   if (S.view === 'fav' && S.favTab === 'cup' && activeCup() && !S.cupOut) { S.cupOut = true; renderView(); return; }
   if (SH.open) { closeSheet(); return; }
   if (sceneBack()) return;
-  if (S.app === 'scene') { switchApp('shuffle'); return; }
+  if (S.app !== 'shuffle') { switchApp('shuffle'); return; }
   if (S.view === 'result' && S.detail) { backToGallery(); return; }
   if (S.view !== 'make') { S.view = 'make'; renderAll(); return; }
   minimizeApp();
@@ -2137,6 +2140,7 @@ document.addEventListener('keydown', (e) => {
         model: st.model, size, steps: st.steps, scale: st.cfg, rescale: st.rescale, sampler: st.sampler };
     },
   });
+  initClean({ h, toast, confirmBtn, stamp, renderView: () => renderView(), sceneImages: () => sceneImages(), saveAs: (n, b, folder, quiet) => saveBlobAs(n, b, folder, quiet) });
   try {
     await load();
     await loadScene();

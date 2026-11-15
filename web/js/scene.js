@@ -1168,3 +1168,6 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'ArrowRight') stepViewer(1);
   if (e.key === 'ArrowLeft') stepViewer(-1);
 });
+
+// EXIF 제거 화면에서 고를 수 있게: 다 받은 그림 목록 (최신이 앞)
+export function sceneImages() { return doneList().map((g) => ({ id: g.id, imgId: g.imgId })); }
