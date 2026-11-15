@@ -128,14 +128,19 @@ function tokenAt(text, caret) {
 const fmtCount = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n || ''));
 
 // get/set: 값 읽기·쓰기. 높이는 내용에 맞춰 늘어난다(시트가 스크롤된다).
-function editor({ get, set, placeholder, id }) {
+// head: 칸 안쪽 위에 놓을 탭 줄 (novelai.net처럼 탭이 칸 안에 있다).
+// fill: 칸 높이를 시트에 남은 높이(--ed-fill)에 맞춘다. 글이 길면 칸 안에서 스크롤된다.
+function editor({ get, set, placeholder, id, head, fill }) {
   const pre = h('pre', { class: 'ed-hl', 'aria-hidden': 'true' });
   const ta = h('textarea', { class: 'ed-ta', id, spellcheck: 'false', autocapitalize: 'off', autocomplete: 'off', placeholder, value: get() });
   const sug = h('div', { class: 'ed-sug', hidden: true });
   let timer;
   // 입력칸이 직접 스크롤된다(길면 칸 안에서 스크롤). 글자를 끌어 선택할 때 폰이 칸 안을 알아서 내려 준다.
   // 뒤의 색칠한 글자는 입력칸 스크롤 위치를 따라간다.
-  const fit = () => { ta.style.height = 'auto'; ta.style.height = `${ta.scrollHeight + 2}px`; pre.scrollTop = ta.scrollTop; };
+  const fit = () => {
+    if (!fill) { ta.style.height = 'auto'; ta.style.height = `${ta.scrollHeight + 2}px`; }
+    pre.scrollTop = ta.scrollTop;
+  };
   const refresh = () => { paint(pre, ta.value); fit(); };
   ta.addEventListener('scroll', () => { pre.scrollTop = ta.scrollTop; });
   const suggest = () => {
@@ -174,7 +179,7 @@ function editor({ get, set, placeholder, id }) {
   ta.addEventListener('click', suggest);
   ta.addEventListener('blur', () => setTimeout(() => { sug.hidden = true; }, 150));
   refresh();
-  const wrap = h('div', { class: 'ed' }, h('div', { class: 'ed-box' }, pre, ta), sug);
+  const wrap = h('div', { class: `ed${fill ? ' fill' : ''}` }, h('div', { class: 'ed-box' }, head, h('div', { class: 'ed-area' }, pre, ta)), sug);
   requestAnimationFrame(fit);
   wrap.refresh = () => { ta.value = get(); refresh(); };
   return wrap;
@@ -644,6 +649,7 @@ function setSheetHeight(px, animate = true) {
   el.style.height = `${UI.h}px`;
   el.classList.toggle('collapsed', UI.h <= min + 4);
   document.documentElement.style.setProperty('--sheet-min', `${min}px`);
+  updateFill();
 }
 function snapTo(i) { UI.snap = i; setSheetHeight(snapHeights()[i]); }
 // 지금 보이는 높이로 접힘을 판단한다 (기억해 둔 단계가 아니라)
@@ -703,7 +709,20 @@ export function renderSheet(rebuild = false) {
       h('button', { type: 'button', class: 'btn small', onclick: openNotes }, '📒 노트'),
       h('label', { class: 'btn small file-btn' }, 'PNG에서 불러오기', h('input', { type: 'file', accept: 'image/png', hidden: true, onchange: (e) => importPng(e.target.files?.[0], e.target) })),
       C.confirmBtn('프롬프트 비우기', '한 번 더', () => { SC.prompt = ''; SC.negative = ''; SC.chars = []; save(); renderSheet(true); }, 'btn small ghost danger')));
-  body.addEventListener('focusin', (e) => { if (e.target.matches('textarea, input[type=text]') && UI.snap < 2) snapTo(2); });
+  // 입력 중에는 생성 줄을 숨겨 키보드 위 공간을 프롬프트 칸에 준다
+  body.addEventListener('focusin', (e) => {
+    if (!e.target.matches('textarea, input[type=text]')) return;
+    if (e.target.matches('textarea')) el.classList.add('editing');
+    if (UI.snap < 2) snapTo(2); else updateFill();
+  });
+  body.addEventListener('focusout', () => setTimeout(() => {
+    if (document.activeElement?.closest?.('#scene-sheet textarea')) return;
+    if (!el.classList.contains('editing')) return;
+    el.classList.remove('editing');
+    updateFill();
+  }, 60));
+  el.classList.toggle('fs', !!UI.fs);
+  el.classList.remove('editing');
   el.append(handle, body, h('div', { class: 'sc-gobar' }));
   renderGoBar();
   requestAnimationFrame(() => { setSheetHeight(UI.h || snapHeights()[UI.snap], false); body.scrollTop = top; });
@@ -717,24 +736,61 @@ function modelRow() {
       h('button', { type: 'button', class: `seg-b${SC.effort === v ? ' on' : ''}`, onclick: () => { SC.effort = v; save(); renderSheet(true); } }, l))) : null);
 }
 
+// 칸 안쪽 탭 (novelai.net의 Base Prompt / Undesired Content처럼 칸 안 왼쪽 위에 있다)
+function edTabs(cur, onPick, extra) {
+  const tab = (v, l) => h('button', { type: 'button', class: `ed-tab${cur === v ? ' on' : ''}`, onclick: () => onPick(v) }, l);
+  return h('div', { class: 'ed-head' }, tab('prompt', '프롬프트'), tab('uc', '제외할 내용'), h('span', { class: 'grow' }), extra);
+}
+const ICON_EXPAND = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg>';
+const ICON_SHRINK = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4v5H4M20 9h-5V4M15 20v-5h5M4 15h5v5"/></svg>';
+function setFs(on) {
+  UI.fs = on;
+  if (on && UI.snap < 2) UI.snap = 2;
+  renderSheet(true);
+}
+
 function promptBlock() {
   const isUc = SC.tab === 'uc';
-  const ed = editor({ id: 'sc-prompt', get: () => (isUc ? SC.negative : SC.prompt), set: (v) => { if (isUc) SC.negative = v; else { SC.prompt = v; const p = document.querySelector('.sc-peek-text'); if (p) p.textContent = v.replace(/\s+/g, ' ').slice(0, 120); } save(); },
-    placeholder: isUc ? '제외할 내용(Undesired Content)' : '프롬프트를 입력하세요. 태그를 치면 자동완성이 떠요' });
+  const fsBtn = h('button', { type: 'button', class: 'ed-icon', 'aria-label': UI.fs ? '전체화면 닫기' : '전체화면', onclick: () => setFs(!UI.fs) });
+  fsBtn.innerHTML = UI.fs ? ICON_SHRINK : ICON_EXPAND;
+  const ed = editor({ id: 'sc-prompt', fill: true, get: () => (isUc ? SC.negative : SC.prompt), set: (v) => { if (isUc) SC.negative = v; else { SC.prompt = v; const p = document.querySelector('.sc-peek-text'); if (p) p.textContent = v.replace(/\s+/g, ' ').slice(0, 120); } save(); },
+    placeholder: isUc ? '제외할 내용(Undesired Content)' : '프롬프트를 입력하세요',
+    head: edTabs(SC.tab, (v) => { SC.tab = v; save(); renderSheet(true); }, fsBtn) });
   editors.push(ed);
   const ucNote = isUc && sceneEffective(SC).ucPreset !== 'none' ? h('p', { class: 'muted small' }, `UC 프리셋(${UC_PRESETS.find(([k]) => k === SC.ucPreset)?.[1]}) 문구가 앞에 붙어요.`) : null;
-  return h('section', { class: 'sc-sec' },
-    h('div', { class: 'sc-tabs' },
-      h('button', { type: 'button', class: `sc-tab${!isUc ? ' on' : ''}`, onclick: () => { SC.tab = 'prompt'; save(); renderSheet(true); } }, '프롬프트'),
-      h('button', { type: 'button', class: `sc-tab${isUc ? ' on' : ''}`, onclick: () => { SC.tab = 'uc'; save(); renderSheet(true); } }, '제외할 내용 (UC)')),
-    ed, ucNote);
+  return h('section', { class: 'sc-sec sc-main' }, ed, ucNote);
+}
+
+// 큰 프롬프트 칸 높이: 시트에 남은 높이만큼 (아래 캐릭터 칸 제목이 살짝 보이게 남긴다).
+// 입력 중(키보드가 뜸)이면 생성 줄을 숨기고 칸이 시트를 거의 다 쓴다. 전체화면이면 화면 전체를 쓴다.
+function updateFill() {
+  const el = document.getElementById('scene-sheet');
+  if (!el || el.hidden || el.classList.contains('collapsed')) return;
+  const body = el.querySelector('.sc-body');
+  const area = body?.querySelector('.ed.fill .ed-area');
+  if (!area) return;
+  const cs = getComputedStyle(el);
+  const chrome = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom) + parseFloat(cs.borderTopWidth)
+    + (el.querySelector('.sc-handle')?.offsetHeight || 0) + (el.querySelector('.sc-gobar')?.offsetHeight || 0);
+  const sheetH = UI.fs ? el.getBoundingClientRect().height : UI.h;
+  const bodyH = sheetH - chrome;
+  const headH = area.previousElementSibling?.offsetHeight || 0;
+  const offset = area.getBoundingClientRect().top - body.getBoundingClientRect().top + body.scrollTop;
+  const editing = el.classList.contains('editing');
+  const fill = UI.fs ? bodyH - offset - 16 : editing ? bodyH - headH - 24 : bodyH - offset - 60;
+  el.style.setProperty('--ed-fill', `${Math.max(150, Math.round(fill))}px`);
+  if (editing && !UI.fs && document.activeElement?.closest?.('.ed.fill')) {
+    const box = area.parentElement;
+    body.scrollTop += box.getBoundingClientRect().top - body.getBoundingClientRect().top - 6;
+  }
 }
 
 function charBlock() {
   const custom = SC.posMode === 'custom';
   const cards = SC.chars.map((c, i) => {
     const tab = c.tab === 'uc' ? 'uc' : 'prompt';
-    const ed = editor({ get: () => (tab === 'uc' ? c.uc || '' : c.prompt || ''), set: (v) => { if (tab === 'uc') c.uc = v; else c.prompt = v; save(); }, placeholder: tab === 'uc' ? '이 캐릭터에서 뺄 것' : 'girl, ...' });
+    const ed = editor({ get: () => (tab === 'uc' ? c.uc || '' : c.prompt || ''), set: (v) => { if (tab === 'uc') c.uc = v; else c.prompt = v; save(); }, placeholder: tab === 'uc' ? '이 캐릭터에서 뺄 것' : 'girl, ...',
+      head: edTabs(tab, (v) => { c.tab = v; save(); renderSheet(true); }) });
     editors.push(ed);
     const on = c.enabled !== false;
     return h('div', { class: `sc-char${on ? '' : ' off'}` },
@@ -745,9 +801,6 @@ function charBlock() {
         h('button', { type: 'button', class: 'mini', disabled: i === 0, onclick: () => { SC.chars.splice(i - 1, 0, SC.chars.splice(i, 1)[0]); save(); renderSheet(true); }, 'aria-label': '위로' }, '▲'),
         h('button', { type: 'button', class: 'mini', disabled: i === SC.chars.length - 1, onclick: () => { SC.chars.splice(i + 1, 0, SC.chars.splice(i, 1)[0]); save(); renderSheet(true); }, 'aria-label': '아래로' }, '▼'),
         C.confirmBtn('삭제', '한 번 더', () => { SC.chars.splice(i, 1); save(); renderSheet(true); }, 'mini danger')),
-      h('div', { class: 'sc-tabs small' },
-        h('button', { type: 'button', class: `sc-tab${tab === 'prompt' ? ' on' : ''}`, onclick: () => { c.tab = 'prompt'; save(); renderSheet(true); } }, '프롬프트'),
-        h('button', { type: 'button', class: `sc-tab${tab === 'uc' ? ' on' : ''}`, onclick: () => { c.tab = 'uc'; save(); renderSheet(true); } }, 'UC')),
       ed,
       custom ? posGrid(c) : null);
   });
@@ -843,7 +896,6 @@ export function renderGoBar() {
   const info = [];
   if (sub?.usage) info.push(h('span', { class: `go-usage${sub.usage.percent <= 10 ? ' low' : ''}` }, `Opus 무료 ${sub.usage.percent}% 남음`, h('span', { class: 'muted' }, ` (약 ${Math.round(sub.usage.percent * IMAGES_PER_PERCENT).toLocaleString('ko-KR')}장)`)));
   else if (sub) info.push(h('span', {}, `Anlas ${(sub.anlas ?? 0).toLocaleString('ko-KR')}`));
-  info.push(h('span', { class: free ? 'go-free' : 'go-paid' }, free ? '무료 범위' : 'Anlas 듦'));
   if (busy) info.push(h('span', { class: 'go-queue' }, running ? `생성 중 · 대기 ${busy - 1}` : `대기 ${busy}`));
   const step = (d) => { SC.count = Math.max(1, Math.min(50, n + d)); save(); renderGoBar(); };
   bar.append(
@@ -853,8 +905,11 @@ export function renderGoBar() {
         h('button', { type: 'button', onclick: () => step(-1), disabled: n <= 1, 'aria-label': '한 장 덜' }, '−'),
         h('b', {}, `×${n}`),
         h('button', { type: 'button', onclick: () => step(1), 'aria-label': '한 장 더' }, '+')),
+      // novelai.net의 "Generate 1 Image [0 ⚘]"처럼: 올리브 버튼, 오른쪽 검은 칸에 비용
       h('button', { type: 'button', class: `go-btn${busy ? ' queue' : ''}`, onclick: reserve },
-        h('b', {}, busy ? '예약 추가' : '생성'), h('span', {}, n > 1 ? `${n}장` : busy ? '지금 설정 그대로' : '1장'))));
+        h('b', {}, busy ? `${n}장 예약 추가` : `${n}장 생성`),
+        h('span', { class: `go-cost ${free ? 'free' : 'paid'}` }, free ? '무료' : '유료'))));
+  updateFill();  // 생성 줄 높이가 바뀌면(대기 줄이 생기면) 큰 칸 높이도 다시 맞춘다
 }
 
 // ---------------------------------------------------------------- PNG 메타데이터 불러오기 (novelai.net에 그림을 끌어다 놓을 때와 같다)
@@ -1186,6 +1241,7 @@ export function sceneBack() {
   if (UI.viewer) { closeViewer(); return true; }
   if (UI.lp) { hideLp(); return true; }
   if (N.open) { if (N.picker) { N.picker = false; renderNotes(); } else if (N.edit) { leaveNote(); renderNotes(); } else closeNotes(); return true; }
+  if (C.app() === 'scene' && UI.fs) { setFs(false); return true; }
   if (C.app() === 'scene' && UI.snap > 0) { snapTo(0); return true; }
   if (C.app() === 'scene' && SC.stab === 'hist') { SC.stab = 'gen'; save(); C.renderView(); return true; }
   return false;

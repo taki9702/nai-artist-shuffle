@@ -291,10 +291,14 @@ body.viewer-open .toast { bottom: auto; top: calc(96px + env(safe-area-inset-top
 :root { --input: var(--panel2); }
 /* 상황 뽑기: novelai.net 색 (공식 브랜드 페이지의 남색·금빛 크림) */
 :root[data-app="scene"] {
-  --bg: #13142C; --panel: #191B31; --panel2: #22253F; --line: #33365A; --input: #0E0F21;
-  --fg: #F7F7F7; --muted: #C9CADB; --faint: #8C8D98;
+  /* novelai.net 모바일 이미지 화면에서 뽑은 색 */
+  --bg: #00031E; --panel: #000217; --panel2: #262A45; --line: #262940; --input: #000113;
+  --fg: #F1F0F6; --muted: #BEBEC6; --faint: #7F8197;
   --accent: #F5F3C2; --accent2: #9773FF; --ok: #75CF67;
+  --nai-border: #43455C; --nai-olive: #4F4D1C; --nai-under: #585832; --nai-tab: #0B0E2C;
 }
+:root[data-app="scene"] .sc-tab.on { color: var(--fg); border-bottom-color: var(--nai-under); }
+:root[data-app="scene"] .sc-char { background: var(--nai-tab); border-color: var(--nai-border); }
 .soon { display: inline-block; font-size: 12px; font-weight: 800; color: var(--bg); background: var(--accent); border-radius: 6px; padding: 2px 8px; margin-left: 8px; vertical-align: middle; }
 .scene-hero { border-color: var(--accent); }
 .section-title { font-size: 18px; margin: 6px 2px 0; }
@@ -432,17 +436,18 @@ body.scene-mode .toast { bottom: auto; top: calc(72px + env(safe-area-inset-top,
 .sc-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; padding: 48px 20px; color: var(--fg); }
 .sc-empty-mark { font-size: 42px; color: var(--accent); }
 
-.sc-sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 35; max-width: 860px; margin: 0 auto; background: var(--panel); border: 1px solid var(--line); border-bottom: 0; border-radius: 18px 18px 0 0; display: flex; flex-direction: column; box-shadow: 0 -10px 30px #0009; padding-bottom: env(safe-area-inset-bottom, 0px); }
+.sc-sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 35; max-width: 860px; margin: 0 auto; background: var(--panel); border: 1px solid var(--nai-border, var(--line)); border-bottom: 0; border-radius: 18px 18px 0 0; display: flex; flex-direction: column; box-shadow: 0 -10px 30px #0009; padding-bottom: env(safe-area-inset-bottom, 0px); }
 .sc-sheet.anim { transition: height .22s ease; }
 .sc-handle { flex: 0 0 auto; padding: 8px 16px 6px; touch-action: none; cursor: grab; display: flex; flex-direction: column; align-items: center; gap: 6px; user-select: none; }
 .grip { width: 46px; height: 5px; border-radius: 3px; background: var(--faint); }
 .sc-peek { display: none; width: 100%; align-items: center; gap: 10px; }
 .sc-sheet.collapsed .sc-peek { display: flex; }
 .sc-peek-text { flex: 1; min-width: 0; font-family: var(--mono); font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sc-peek-btn { flex: 0 0 auto; font-size: 15px; font-weight: 800; color: #13142C; background: var(--accent); border-radius: 999px; padding: 6px 14px; }
+.sc-peek-btn { flex: 0 0 auto; font-size: 15px; font-weight: 800; color: var(--fg); background: var(--nai-olive); border-radius: 8px; padding: 7px 14px; }
 .sc-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 14px 14px; display: flex; flex-direction: column; gap: 16px; overscroll-behavior: contain; }
 .sc-sheet.collapsed .sc-body { display: none; }
 .sc-gobar { flex: 0 0 auto; border-top: 1px solid var(--line); padding: 8px 14px 10px; display: flex; flex-direction: column; gap: 8px; background: var(--panel); }
+.go-info:empty { display: none; }
 .go-info { display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .go-usage { color: var(--accent); font-weight: 700; }
 .go-usage.low { color: var(--bad); }
@@ -450,14 +455,15 @@ body.scene-mode .toast { bottom: auto; top: calc(72px + env(safe-area-inset-top,
 .go-paid { color: #ffa94d; font-weight: 800; }
 .go-queue { color: var(--fg); font-weight: 800; }
 .go-row { display: flex; gap: 10px; align-items: stretch; }
-.stepper { display: flex; align-items: center; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--input); }
+.stepper { display: flex; align-items: center; border: 0; border-radius: 8px; overflow: hidden; background: var(--panel2); }
 .stepper button { width: 44px; min-height: 56px; border: 0; background: transparent; font-size: 24px; color: var(--fg); }
 .stepper button:disabled { opacity: .3; }
 .stepper b { min-width: 42px; text-align: center; font-size: 18px; font-variant-numeric: tabular-nums; }
-.go-btn { flex: 1; border: 0; border-radius: 12px; background: var(--accent); color: #13142C; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 56px; gap: 0; }
-.go-btn b { font-size: 19px; font-weight: 800; }
-.go-btn span { font-size: 13px; font-weight: 700; opacity: .75; }
-.go-btn.queue { background: linear-gradient(90deg, #9773FF, #5d7bff); color: #fff; }
+.go-btn { flex: 1; border: 0; border-radius: 8px; background: var(--nai-olive); color: var(--fg); display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 56px; padding: 0 10px 0 18px; }
+.go-btn b { font-size: 18px; font-weight: 800; white-space: nowrap; }
+.go-cost { flex: 0 0 auto; background: var(--panel); border-radius: 6px; padding: 7px 12px; font-size: 15px; font-weight: 800; }
+.go-cost.free { color: var(--ok); }
+.go-cost.paid { color: #ffa94d; }
 .go-btn:active { transform: translateY(1px); }
 
 .sc-model-row { display: flex; gap: 8px; align-items: center; }
@@ -471,12 +477,28 @@ body.scene-mode .toast { bottom: auto; top: calc(72px + env(safe-area-inset-top,
 
 /* 프롬프트 칸: 뒤에 색칠한 글자, 위에 투명한 입력칸 (글꼴·여백이 똑같아야 커서가 맞는다) */
 .ed { display: flex; flex-direction: column; gap: 6px; }
-.ed-box { position: relative; background: var(--input); border: 1px solid var(--line); border-radius: 10px; }
-.ed-box:focus-within { border-color: var(--accent); }
-.ed-hl, .ed-ta { margin: 0; padding: 11px 12px; font: 16px/1.6 var(--sans, system-ui, sans-serif); letter-spacing: 0; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; tab-size: 4; }
+.ed-box { position: relative; background: var(--input); border: 1px solid var(--nai-border, var(--line)); border-radius: 8px; }
+.ed-box:focus-within { border-color: #6A6D88; }
+.ed-area { position: relative; }
+/* 칸 안쪽 탭 줄 (novelai.net: Base Prompt / Undesired Content + 아이콘) */
+.ed-head { display: flex; align-items: center; gap: 2px; padding: 6px 4px 0 6px; }
+.ed-tab { border: 0; background: transparent; color: var(--faint); font-size: 15px; font-weight: 700; padding: 7px 11px; border-radius: 6px; min-height: 38px; }
+.ed-tab.on { color: var(--fg); background: var(--nai-tab, var(--panel2)); }
+.ed-icon { flex: 0 0 auto; width: 42px; height: 40px; border: 0; background: transparent; color: var(--fg); display: flex; align-items: center; justify-content: center; border-radius: 6px; }
+.ed-icon:active { background: var(--panel2); }
+.ed-hl, .ed-ta { margin: 0; padding: 10px 14px 12px; font: 17px/1.7 var(--sans, system-ui, sans-serif); letter-spacing: 0; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; tab-size: 4; }
 .ed-hl { position: absolute; inset: 0; overflow: hidden; color: var(--fg); pointer-events: none; }
 .ed-ta { position: relative; z-index: 1; display: block; width: 100%; min-height: 104px; max-height: 46vh; resize: none; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; background: transparent !important; border: 0; border-radius: 10px; color: transparent; caret-color: var(--accent); -webkit-text-fill-color: transparent; }
 .ed-ta::-webkit-scrollbar { display: none; }
+/* 큰 프롬프트 칸: 높이는 시트에 남은 만큼 (scene.js updateFill), 길면 칸 안에서 스크롤 */
+.ed.fill { position: relative; }
+.ed.fill .ed-ta { height: var(--ed-fill, 50vh); min-height: 150px; max-height: none; }
+.ed.fill .ed-sug { position: absolute; left: 6px; right: 6px; bottom: 6px; }
+.sc-sheet.editing .sc-gobar { display: none; }
+/* 전체화면 편집: 프롬프트 칸만 화면 가득 */
+.sc-sheet.fs { top: 0; height: auto !important; max-width: none; border-radius: 0; border: 0; padding-top: env(safe-area-inset-top, 0px); }
+.sc-sheet.fs .sc-handle, .sc-sheet.fs .sc-gobar, .sc-sheet.fs .sc-body > :not(.sc-main) { display: none; }
+.sc-sheet.fs .sc-body { padding-top: 10px; }
 .ed-ta::placeholder { color: var(--faint); -webkit-text-fill-color: var(--faint); }
 .ed-ta:focus { outline: none; }
 .ed-ta::selection { background: #9773ff66; }
