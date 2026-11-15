@@ -802,44 +802,163 @@ function updateFill() {
   }
 }
 
+// ---------------------------------------------------------------- 캐릭터 프롬프트 (novelai.net 모양)
+// 위: "캐릭터 프롬프트" 상자(설명·+ 버튼·위치 [AI 선택 | 위치 지정 | ⊞]).
+// 캐릭터마다 얇은 테두리 카드 하나: 머리 줄(♀ 캐릭터 1 ▲ ▼ | ✔ | 🗑 | ⇕) 아래에 탭과 글이 상자 없이 바로 온다.
+const SVG = (d, w = 20) => `<svg viewBox="0 0 24 24" width="${w}" height="${w}" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+const IC = {
+  up: SVG('<path d="M6 15l6-6 6 6"/>'),
+  down: SVG('<path d="M6 9l6 6 6-6"/>'),
+  check: SVG('<path d="M5 12.5l4.5 4.5L19 7.5"/>'),
+  trash: SVG('<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/>'),
+  fold: SVG('<path d="M5 4h14M5 20h14M9 9l3 3 3-3M9 15l3-3 3 3"/>'),
+  unfold: SVG('<path d="M5 12h14M9 7l3-3 3 3M9 17l3 3 3-3"/>'),
+  grid: SVG('<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M12 4v16M4 12h16"/>'),
+  plus: SVG('<path d="M12 5v14M5 12h14"/>', 26),
+};
+const iconBtn = (icon, attrs) => { const b = h('button', { type: 'button', ...attrs }); b.innerHTML = icon; return b; };
+const isV5 = (model) => /^nai-diffusion-5/.test(String(model || ''));
+const maxChars = () => (isV5(SC.model) ? 22 : 6);
+function sexMark(text) {
+  const t = String(text || '').trim().toLowerCase();
+  if (/^(\d*girls?|woman|female)\b/.test(t)) return '♀';
+  if (/^(\d*boys?|man|male)\b/.test(t)) return '♂';
+  return '○';
+}
+const posDefault = () => ({ x: 0.5, y: 0.5 });
+
 function charBlock() {
   const custom = SC.posMode === 'custom';
+  const n = SC.chars.length;
+  const addBtn = iconBtn(IC.plus, { class: 'cp-add', 'aria-label': '캐릭터 추가', disabled: n >= maxChars(),
+    onclick: () => { SC.chars.push({ prompt: '', uc: '', enabled: true, pos: posDefault() }); save(); renderSheet(true); } });
+  const setMode = (v) => { SC.posMode = v; save(); renderSheet(true); if (v === 'custom' && SC.chars.length) openPos(); };
+  const top = h('div', { class: 'cp-box' },
+    h('div', { class: 'cp-top' },
+      h('div', { class: 'cp-title' }, h('b', {}, '캐릭터 프롬프트'), h('span', { class: 'muted' }, `장면 속 캐릭터마다 프롬프트를 따로 써요. (최대 ${maxChars()}명)`)),
+      addBtn),
+    h('div', { class: 'cp-pos-row' },
+      h('span', { class: 'muted' }, '위치'),
+      h('div', { class: 'cp-seg' },
+        h('button', { type: 'button', class: `cp-seg-b${!custom ? ' on' : ''}`, onclick: () => setMode('ai') }, 'AI 선택'),
+        h('button', { type: 'button', class: `cp-seg-b${custom ? ' on' : ''}`, onclick: () => setMode('custom') }, '위치 지정'),
+        iconBtn(IC.grid, { class: 'cp-seg-b cp-seg-i', 'aria-label': '캐릭터 위치 정하기', disabled: !custom || !n, onclick: openPos }))));
   const cards = SC.chars.map((c, i) => {
     const tab = c.tab === 'uc' ? 'uc' : 'prompt';
-    const ed = editor({ get: () => (tab === 'uc' ? c.uc || '' : c.prompt || ''), set: (v) => { if (tab === 'uc') c.uc = v; else c.prompt = v; save(); }, placeholder: tab === 'uc' ? '이 캐릭터에서 뺄 것' : 'girl, ...',
-      head: edTabs(tab, (v) => { c.tab = v; save(); renderSheet(true); }) });
-    editors.push(ed);
     const on = c.enabled !== false;
-    return h('div', { class: `sc-char${on ? '' : ' off'}` },
-      h('div', { class: 'sc-char-head' },
-        h('button', { type: 'button', class: `sc-switch${on ? ' on' : ''}`, 'aria-pressed': on ? 'true' : 'false', onclick: () => { c.enabled = !on; save(); renderSheet(true); } }, h('span')),
-        h('b', {}, `캐릭터 ${i + 1}`),
+    const mark = h('span', { class: 'cp-sex' }, sexMark(c.prompt));
+    const ed = c.folded ? null : editor({ get: () => (tab === 'uc' ? c.uc || '' : c.prompt || ''),
+      set: (v) => { if (tab === 'uc') c.uc = v; else { c.prompt = v; mark.textContent = sexMark(v); } save(); },
+      placeholder: tab === 'uc' ? '이 캐릭터에서 뺄 것' : 'girl, ...',
+      head: edTabs(tab, (v) => { c.tab = v; save(); renderSheet(true); }) });
+    if (ed) { ed.classList.add('flat'); editors.push(ed); }
+    const move = (d) => { SC.chars.splice(i + d, 0, SC.chars.splice(i, 1)[0]); save(); renderSheet(true); };
+    const del = C.confirmBtn('', '삭제?', () => { SC.chars.splice(i, 1); save(); renderSheet(true); }, 'cp-ib cp-del');
+    del.innerHTML = IC.trash;
+    del.setAttribute('aria-label', '캐릭터 삭제');
+    // 두 번 눌러야 지워진다: 첫 번째에 글자가 '삭제?'로 바뀌고 2.5초 뒤 아이콘으로 돌아온다
+    del.addEventListener('click', () => { if (!del.classList.contains('armed')) return; setTimeout(() => { if (!del.classList.contains('armed')) del.innerHTML = IC.trash; }, 2600); });
+    return h('div', { class: `cp-card${on ? '' : ' off'}${c.folded ? ' folded' : ''}` },
+      h('div', { class: 'cp-head' },
+        mark,
+        h('b', { class: 'cp-name' }, `캐릭터 ${i + 1}`),
+        custom && c.pos ? h('button', { type: 'button', class: 'cp-posb', onclick: () => openPos(i) }, posLabel(c.pos)) : null,
+        iconBtn(IC.up, { class: 'cp-arrow', 'aria-label': '위로', disabled: i === 0, onclick: () => move(-1) }),
+        iconBtn(IC.down, { class: 'cp-arrow', 'aria-label': '아래로', disabled: i === n - 1, onclick: () => move(1) }),
         h('span', { class: 'grow' }),
-        h('button', { type: 'button', class: 'mini', disabled: i === 0, onclick: () => { SC.chars.splice(i - 1, 0, SC.chars.splice(i, 1)[0]); save(); renderSheet(true); }, 'aria-label': '위로' }, '▲'),
-        h('button', { type: 'button', class: 'mini', disabled: i === SC.chars.length - 1, onclick: () => { SC.chars.splice(i + 1, 0, SC.chars.splice(i, 1)[0]); save(); renderSheet(true); }, 'aria-label': '아래로' }, '▼'),
-        C.confirmBtn('삭제', '한 번 더', () => { SC.chars.splice(i, 1); save(); renderSheet(true); }, 'mini danger')),
-      ed,
-      custom ? posGrid(c) : null);
+        iconBtn(IC.check, { class: `cp-ib cp-on${on ? ' on' : ''}`, 'aria-label': on ? '이 캐릭터 끄기' : '이 캐릭터 켜기', 'aria-pressed': on ? 'true' : 'false', onclick: () => { c.enabled = !on; save(); renderSheet(true); } }),
+        del,
+        iconBtn(c.folded ? IC.unfold : IC.fold, { class: 'cp-ib cp-fold', 'aria-label': c.folded ? '펼치기' : '접기', onclick: () => { c.folded = !c.folded; save(); renderSheet(true); } })),
+      c.folded ? h('div', { class: 'cp-peek', onclick: () => { c.folded = false; save(); renderSheet(true); } }, String(c.prompt || '').replace(/\s+/g, ' ').slice(0, 80) || '(비어 있음)') : ed);
   });
-  return h('section', { class: 'sc-sec' },
-    h('div', { class: 'sc-sec-head' }, h('b', {}, '캐릭터 프롬프트'),
-      h('div', { class: 'seg' }, [['ai', 'AI 선택'], ['custom', '위치 지정']].map(([v, l]) =>
-        h('button', { type: 'button', class: `seg-b${SC.posMode === v ? ' on' : ''}`, onclick: () => { SC.posMode = v; save(); renderSheet(true); } }, l)))),
-    cards,
-    SC.chars.length < 6 ? h('button', { type: 'button', class: 'sc-add', onclick: () => { SC.chars.push({ prompt: '', uc: '', enabled: true, pos: { x: 0.5, y: 0.5 } }); save(); renderSheet(true); } }, '+ 캐릭터 추가') : null,
-    SC.chars.length ? h('p', { class: 'muted small' }, '인원 태그(2girls 등)는 위 프롬프트에, 캐릭터 칸에는 girl/boy만 써요. 위 칸 캐릭터가 대체로 왼쪽에 와요.') : null);
+  return h('section', { class: 'sc-sec sc-chars' }, top, cards,
+    n ? h('p', { class: 'muted small' }, '인원 태그(2girls 등)는 위 프롬프트에, 캐릭터 칸에는 girl/boy만 써요.') : null);
 }
 
-function posGrid(c) {
-  const cur = c.pos || { x: 0.5, y: 0.5 };
-  const cells = [];
-  for (let r = 0; r < 5; r++) for (let col = 0; col < 5; col++) {
-    const x = 0.1 + col * 0.2, y = 0.1 + r * 0.2;
-    const on = Math.abs(cur.x - x) < 0.01 && Math.abs(cur.y - y) < 0.01;
-    cells.push(h('button', { type: 'button', class: `pos${on ? ' on' : ''}`, 'aria-label': `위치 ${col + 1},${r + 1}`, onclick: () => { c.pos = { x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10 }; save(); renderSheet(true); } }));
-  }
+// ---------------------------------------------------------------- 캐릭터 위치 화면 (novelai.net의 Character Positions)
+// 그림 비율 그대로의 캔버스. 캐릭터를 골라 누르거나 끌면 그 자리로. V5는 자유 위치, V4·V4.5는 5×5 칸(0.1~0.9)에 맞춘다.
+const P = { open: false, sel: 0 };
+const GRID = [0.1, 0.3, 0.5, 0.7, 0.9];
+const snapGrid = (v) => GRID.reduce((a, b) => (Math.abs(b - v) < Math.abs(a - v) ? b : a));
+function posLabel(pos) {
+  const col = 'ABCDE'[Math.round((pos.x - 0.1) / 0.2)], row = Math.round((pos.y - 0.1) / 0.2) + 1;
+  const onGrid = GRID.includes(Math.round(pos.x * 100) / 100) && GRID.includes(Math.round(pos.y * 100) / 100);
+  return onGrid && col ? `${col}${row}` : `${Math.round(pos.x * 100)},${Math.round(pos.y * 100)}`;
+}
+function openPos(i) {
+  if (!SC.chars.length) return;
+  P.open = true;
+  if (Number.isInteger(i)) P.sel = i;
+  if (P.sel >= SC.chars.length) P.sel = 0;
+  for (const c of SC.chars) if (!c.pos) c.pos = posDefault();
+  renderPos();
+}
+function closePos() { P.open = false; renderPos(); save(); renderSheet(true); }
+const CHAR_COLORS = ['#ff7a90', '#6fb6ff', '#8fe39a', '#ffcf5c', '#c79bff', '#ff9e57', '#5fe0d2', '#f57fd6'];
+function renderPos() {
+  const root = document.getElementById('spos');
+  if (!root) return;
+  root.innerHTML = '';
+  root.hidden = !P.open;
+  document.body.classList.toggle('sheet-open', P.open || T.open || N.open);
+  if (!P.open) return;
+  const free = isV5(SC.model);
   const [w, hh] = sceneSize(SC);
-  return h('div', { class: 'pos-wrap' }, h('div', { class: 'pos-grid', style: `aspect-ratio:${w}/${hh}` }, cells), h('span', { class: 'muted small' }, '그림 안에서 이 캐릭터가 올 자리'));
+  const color = (i) => CHAR_COLORS[i % CHAR_COLORS.length];
+  const canvas = h('div', { class: `pos-canvas${free ? ' free' : ''}`, style: `aspect-ratio:${w}/${hh}` });
+  for (let r = 0; r < 5; r++) for (let col = 0; col < 5; col++) canvas.append(h('span', { class: 'pos-cell', style: `left:${col * 20}%;top:${r * 20}%` }));
+  const markers = SC.chars.map((c, i) => {
+    const m = h('span', { class: `pos-mark${i === P.sel ? ' sel' : ''}${c.enabled === false ? ' off' : ''}`, style: `--c:${color(i)}` }, String(i + 1));
+    canvas.append(m);
+    return m;
+  });
+  const chips = SC.chars.map((c, i) => h('button', { type: 'button', class: `pos-chip${i === P.sel ? ' on' : ''}${c.enabled === false ? ' off' : ''}`, style: `--c:${color(i)}`,
+    onclick: () => { P.sel = i; renderPos(); } },
+  h('i', {}, String(i + 1)), h('span', {}, `${sexMark(c.prompt)} ${String(c.prompt || '').replace(/\s+/g, ' ').slice(0, 24) || '(비어 있음)'}`)));
+  const label = h('b', { class: 'pos-now' });
+  const place = () => {
+    SC.chars.forEach((c, i) => {
+      const m = markers[i];
+      m.style.left = `${c.pos.x * 100}%`;
+      m.style.top = `${c.pos.y * 100}%`;
+      m.classList.toggle('sel', i === P.sel);
+    });
+    const c = SC.chars[P.sel];
+    label.textContent = c ? `캐릭터 ${P.sel + 1}: ${posLabel(c.pos)}` : '';
+  };
+  const setFrom = (e) => {
+    const r = canvas.getBoundingClientRect();
+    let x = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+    let y = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
+    if (free) { x = Math.round(Math.min(0.95, Math.max(0.05, x)) * 100) / 100; y = Math.round(Math.min(0.95, Math.max(0.05, y)) * 100) / 100; }
+    else { x = snapGrid(x); y = snapGrid(y); }
+    SC.chars[P.sel].pos = { x, y };
+    place();
+  };
+  let drag = false;
+  canvas.addEventListener('pointerdown', (e) => {
+    // 누른 곳 가까이에 다른 캐릭터 표시가 있으면 그 캐릭터를 잡는다
+    const r = canvas.getBoundingClientRect();
+    let near = -1, best = 26;
+    SC.chars.forEach((c, i) => { const d = Math.hypot(c.pos.x * r.width + r.left - e.clientX, c.pos.y * r.height + r.top - e.clientY); if (d < best) { best = d; near = i; } });
+    if (near >= 0 && near !== P.sel) { P.sel = near; chips.forEach((b, i) => b.classList.toggle('on', i === near)); }
+    drag = true;
+    canvas.setPointerCapture?.(e.pointerId);
+    setFrom(e);
+  });
+  canvas.addEventListener('pointermove', (e) => { if (drag) setFrom(e); });
+  const stop = () => { if (drag) { drag = false; save(); } };
+  canvas.addEventListener('pointerup', stop);
+  canvas.addEventListener('pointercancel', stop);
+  const panel = h('div', { class: 'sheet-panel pos-panel', role: 'dialog', 'aria-label': '캐릭터 위치' },
+    h('div', { class: 'row between' }, h('div', { class: 'sheet-title' }, '캐릭터 위치'), h('button', { class: 'btn small', onclick: closePos }, '완료')),
+    h('p', { class: 'muted small' }, free ? 'V5: 캐릭터를 고르고 캔버스를 누르거나 끌면 그 자리에 와요 (자유 위치).' : 'V4·V4.5: 5×5 칸 중 가장 가까운 칸에 맞춰요.'),
+    h('div', { class: 'pos-chips' }, chips),
+    h('div', { class: 'pos-stage' }, canvas),
+    h('div', { class: 'row between' }, label,
+      h('button', { class: 'btn small ghost', onclick: () => { SC.chars[P.sel].pos = posDefault(); place(); save(); } }, '가운데로')));
+  root.append(h('div', { class: 'sheet-back', onclick: closePos }), panel);
+  place();
 }
 
 function slider(key, { min, max, step, label, disabled, fmt = (v) => v }) {
@@ -1253,6 +1372,7 @@ function thumbPicker(x) {
 
 // ---------------------------------------------------------------- 뒤로 가기
 export function sceneBack() {
+  if (P.open) { closePos(); return true; }
   if (T.maskOpen) { closeMask(); return true; }
   if (T.open) { if (T.confirm) { T.confirm = false; renderTools(); } else closeTools(); return true; }
   if (UI.viewer) { closeViewer(); return true; }
@@ -1639,6 +1759,8 @@ function toolNeedsConfirm(tool) {
 
 function renderTools() {
   const root = document.getElementById('stools');
+  // 다시 그려도 보던 위치를 지킨다 (실행 확인 창이 화면 밖에 생겨 '반응 없음'처럼 보이던 문제)
+  const prevTop = root.querySelector('.tools-panel')?.scrollTop || 0;
   root.innerHTML = '';
   root.hidden = !T.open;
   document.body.classList.toggle('sheet-open', T.open || N.open);
@@ -1704,6 +1826,8 @@ function renderTools() {
     h('div', { class: 'tool-grid' }, TOOLS.map(([k, l, d]) => h('button', { type: 'button', class: `tool-b${tool === k ? ' on' : ''}`, onclick: () => { T.tool = k; T.confirm = false; if (k !== 'colorize' && k !== 'emotion' && !o.prompt) o.prompt = p.prompt || ''; o.strength = undefined; o.noise = undefined; renderTools(); } }, h('b', {}, l), h('span', {}, d)))),
     h('section', { class: 'tool-opts' }, ...opts),
     costLine, run].filter(Boolean));
+  panel.scrollTop = prevTop;
+  if (T.confirm) requestAnimationFrame(() => run.scrollIntoView({ block: 'nearest' }));
 }
 
 // ---------------------------------------------------------------- 갤러리 그림 가져오기: 기록에 '가져온 그림' 묶음으로 (NAI 생성 정보가 있으면 프롬프트·설정도)
