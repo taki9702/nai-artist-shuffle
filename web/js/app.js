@@ -743,15 +743,18 @@ async function publicFile(name, folder) {
 }
 
 // 아무 파일이나 폰의 공용 폴더에 저장 (못 쓰면 공유 창으로)
-async function saveBlobAs(name, blob, folder = 'Pictures/NAISupporter') {
-  if (!native) { downloadBlob(name, blob); toast('다운로드했어요', 'ok'); return; }
+// quiet: 알림 없이 저장하고, 저장한 곳 이름을 돌려준다 (여러 장 한꺼번에 저장할 때). 실패하면 ''.
+async function saveBlobAs(name, blob, folder = 'Pictures/NAISupporter', quiet = false) {
+  if (!native) { downloadBlob(name, blob); if (!quiet) toast('다운로드했어요', 'ok'); return '다운로드'; }
   try {
     const target = await publicFile(name, folder);
-    if (!target) { await shareBlobAs(name, blob); return; }
+    if (!target) { if (quiet) return ''; await shareBlobAs(name, blob); return ''; }
     await Filesystem.writeFile({ path: target.path, directory: target.directory, data: toBase64(new Uint8Array(await blob.arrayBuffer())), recursive: true });
-    toast(`저장했어요: ${target.label}`, 'ok');
+    if (!quiet) toast(`저장했어요: ${target.label}`, 'ok');
+    return target.label;
   } catch (e) {
-    toast(`저장하지 못했어요: ${e?.message || e}`, 'bad');
+    if (!quiet) toast(`저장하지 못했어요: ${e?.message || e}`, 'bad');
+    return '';
   }
 }
 async function shareBlobAs(name, blob) {
@@ -2123,7 +2126,7 @@ document.addEventListener('keydown', (e) => {
   initScene({
     h, toast, confirmBtn, native, Gen, Filesystem, fromBase64, toBase64, stamp, when, askNotifications,
     app: () => S.app, apiKey: () => S.settings.apiKey, sub: () => S.sub, refreshSub: () => refreshSub(),
-    copy: (t, w) => copy(t, w), saveBlob: (n, b) => saveBlobAs(n, b), shareBlob: (n, b) => shareBlobAs(n, b),
+    copy: (t, w) => copy(t, w), saveBlob: (n, b) => saveBlobAs(n, b), shareBlob: (n, b) => shareBlobAs(n, b), saveBlobQuiet: (n, b) => saveBlobAs(n, b, 'Pictures/NAISupporter', true),
     saveFile: (n, b) => saveBlobAs(n, b, 'Download/NAISupporter'),
     renderView: () => renderView(), sync: () => syncNative(), pending: (d) => { pending += d; },
     // 상황 뽑기를 처음 열 때: 작가 셔플에 넣어 둔 프롬프트·설정에서 시작

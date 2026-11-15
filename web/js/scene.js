@@ -15,17 +15,17 @@ const DEF = {
   prompt: '', negative: '', chars: [], posMode: 'ai',
   model: 'nai-diffusion-5-full', effort: 'high', size: 'normal-portrait', width: 832, height: 1216,
   steps: 28, scale: 5, rescale: 0, sampler: 'k_euler_ancestral', noise: 'karras', seed: '',
-  quality: 'none', ucPreset: 'none', count: 1, tab: 'prompt', grid: 1, open: true,
+  quality: 'none', ucPreset: 'none', count: 1, tab: 'prompt', grid: 1, hgrid: 3, stab: 'gen', open: true,
 };
 const SC = { ...DEF };
 let G = [];  // 생성 기록 (최신이 앞)
 let NOTES = [];  // 노트: 직접 쓰는 상황 노트(kind 'scene')·캐릭터 노트(kind 'char')
-const UI = { snap: 1, h: 0, limit: 40, viewer: null, settingsOpen: false, queueKeys: [], current: null };
+const UI = { snap: 1, h: 0, limit: 20, viewer: null, settingsOpen: false, queueKeys: [], current: null, lp: null };
 const urls = new Map();
 const LQ = { items: [], busy: false };  // 브라우저 미리보기용 대기열 (폰에서는 생성 서비스가 맡는다)
 
 export const isSceneKey = (k) => /^s\d+_\d+$/.test(String(k));
-const UI_KEYS = ['tab', 'grid', 'open', 'count'];
+const UI_KEYS = ['tab', 'grid', 'hgrid', 'stab', 'open', 'count'];
 const snapshot = () => { const o = JSON.parse(JSON.stringify(SC)); for (const k of UI_KEYS) delete o[k]; return o; };
 
 let saveTimer;
@@ -198,7 +198,10 @@ function fillCard(el, g) {
   if (g.status === 'done' && g.imgId) {
     const img = h('img', { alt: `생성 ${g.seed}`, loading: 'lazy' });
     urlFor(g.imgId).then((u) => { if (u) img.src = u; });
-    el.append(h('button', { type: 'button', class: 'sc-pic', onclick: () => openViewer(g.id) }, img));
+    const pic = h('button', { type: 'button', class: 'sc-pic', onclick: () => { if (lpFired) { lpFired = false; return; } openViewer(g.id); } }, img);
+    longPress(pic, () => showLp(el, g));
+    el.append(pic);
+    if (UI.lp === g.id) el.append(lpMenu(g));
     return;
   }
   const qi = UI.queueKeys.indexOf(g.id);
@@ -216,26 +219,117 @@ function fillCard(el, g) {
 function updateCard(g) {
   const el = cardEls.get(g.id);
   if (el && el.isConnected) fillCard(el, g);
+  refreshBatchHead(g.created);
+}
+
+// 예약 묶음: 한 번 누를 때 만든 그림들 (created가 같다). 최신 묶음이 앞.
+function batches() {
+  const map = new Map();
+  for (const g of G) { if (!map.has(g.created)) map.set(g.created, []); map.get(g.created).push(g); }
+  return [...map.entries()].sort((a, b) => b[0] - a[0]).map(([ts, items]) => ({ ts, items: items.sort((x, y) => (x.no || 0) - (y.no || 0)) }));
+}
+const pendingBatch = (b) => b.items.some((g) => g.status === 'wait' || g.status === 'run');
+// 생성 탭: 아직 덜 끝난 묶음 전부 + 가장 최근 묶음. 다 끝난 예전 묶음은 기록 탭에서만 보인다.
+const genBatches = () => batches().filter((b, i) => i === 0 || pendingBatch(b));
+const scopeIds = () => (SC.stab === 'hist' ? batches() : genBatches()).flatMap((b) => b.items).filter((g) => g.status === 'done' && g.imgId).map((g) => g.id);
+const fileName = (g) => `NAI_${C.stamp(g.created)}_${(g.no || 0) + 1}_${g.seed}.png`;
+
+async function saveBatch(items) {
+  const done = items.filter((g) => g.status === 'done' && g.imgId);
+  if (!done.length) { C.toast('저장할 그림이 없어요', 'bad'); return; }
+  C.toast(`${done.length}장 저장하는 중…`);
+  let ok = 0, where = '';
+  for (const g of done) {
+    const b = await store.imageGet(g.imgId).catch(() => null);
+    if (!b) continue;
+    const r = await C.saveBlobQuiet(fileName(g), b);
+    if (r) { ok++; where = r; }
+  }
+  C.toast(ok ? `${ok}장 저장했어요${where ? `: ${where}` : ''}` : '저장하지 못했어요', ok ? 'ok' : 'bad');
+}
+
+function batchHead(b) {
+  const n = b.items.length;
+  const done = b.items.filter((g) => g.status === 'done').length;
+  const wait = b.items.filter((g) => g.status === 'wait');
+  const run = b.items.some((g) => g.status === 'run');
+  const fail = b.items.filter((g) => g.status === 'fail' || g.status === 'stop').length;
+  return h('div', { class: 'sc-batch-head', id: `bh-${b.ts}` },
+      h('div', { class: 'sc-batch-title' },
+        h('b', {}, `${n}장 예약`),
+        h('span', { class: 'muted small' }, `${C.when(b.ts)} · 완료 ${done}/${n}${run ? ' · 생성 중' : ''}${fail ? ` · 실패 ${fail}` : ''}`)),
+      h('div', { class: 'row gap6' },
+        wait.length ? C.confirmBtn('예약 빼기', '한 번 더', () => removeReserved(wait), 'btn small ghost') : null,
+        h('button', { type: 'button', class: 'btn small primary', disabled: !done, onclick: () => saveBatch(b.items) }, `전부 저장 (${done})`)));
+}
+function batchBlock(b, grid) {
+  return h('section', { class: 'sc-batch' }, batchHead(b), h('div', { class: `sc-list g${grid}` }, b.items.map(itemCard)));
+}
+function refreshBatchHead(ts) {
+  const old = document.getElementById(`bh-${ts}`);
+  if (!old) return;
+  const b = batches().find((x) => x.ts === ts);
+  if (b) old.replaceWith(batchHead(b));
 }
 
 export function viewScene() {
   cardEls.clear();
-  const list = G.slice(0, UI.limit);
+  const hist = SC.stab === 'hist';
+  const grid = hist ? SC.hgrid : SC.grid;
+  const all = batches();
+  const shown = hist ? all.slice(0, UI.limit) : genBatches();
   const clear = C.confirmBtn('예약 모두 빼기', '한 번 더', () => removeReserved(G.filter((g) => g.status === 'wait')));
   clear.id = 'sc-clear';
+  clear.hidden = !G.some((g) => g.status === 'wait');
+  const tabs = h('div', { class: 'sc-tabs sc-vtabs' },
+    h('button', { type: 'button', class: `sc-tab${!hist ? ' on' : ''}`, onclick: () => { SC.stab = 'gen'; UI.lp = null; save(); C.renderView(); window.scrollTo(0, 0); } }, '생성'),
+    h('button', { type: 'button', class: `sc-tab${hist ? ' on' : ''}`, onclick: () => { SC.stab = 'hist'; UI.lp = null; save(); C.renderView(); window.scrollTo(0, 0); } }, '기록 ', h('span', { id: 'sc-hist-n' }, String(doneList().length))));
   const root = h('div', { class: 'view sc-view' },
+    tabs,
     h('div', { class: 'sc-toolbar' },
       h('button', { type: 'button', class: 'btn small', onclick: openNotes }, '📒 노트'),
       h('span', { class: 'muted small', id: 'sc-count' }),
-      h('div', { class: 'seg' }, [1, 2, 3].map((n) => h('button', { type: 'button', class: `seg-b${SC.grid === n ? ' on' : ''}`, onclick: () => { SC.grid = n; save(); C.renderView(); } }, n === 1 ? '크게' : `${n}열`))),
+      h('div', { class: 'seg' }, [1, 2, 3].map((n) => h('button', { type: 'button', class: `seg-b${grid === n ? ' on' : ''}`, onclick: () => { if (hist) SC.hgrid = n; else SC.grid = n; save(); C.renderView(); } }, n === 1 ? '크게' : `${n}열`))),
       clear),
-    G.length ? h('div', { class: `sc-list g${SC.grid}` }, list.map(itemCard))
+    shown.length ? shown.map((b) => batchBlock(b, grid))
       : h('div', { class: 'sc-empty' },
         h('div', { class: 'sc-empty-mark' }, '✦'),
-        h('p', {}, '아래 시트에 프롬프트를 넣고 생성을 누르세요.'),
-        h('p', { class: 'muted small' }, '생성 중에 또 누르면 그때 설정 그대로 예약돼요. 앱을 꺼도 백그라운드에서 받아요.')),
-    G.length > UI.limit ? h('button', { class: 'btn wide', onclick: () => { UI.limit += 40; C.renderView(); } }, `더 보기 (${G.length - UI.limit}장 남음)`) : null);
+        h('p', {}, hist ? '아직 기록이 없어요.' : '아래 시트에 프롬프트를 넣고 생성을 누르세요.'),
+        hist ? null : h('p', { class: 'muted small' }, '생성 중에 또 누르면 그때 설정 그대로 예약돼요. 앱을 꺼도 백그라운드에서 받아요.')),
+    !hist && all.length > shown.length ? h('button', { class: 'btn wide ghost', onclick: () => { SC.stab = 'hist'; save(); C.renderView(); window.scrollTo(0, 0); } }, `이전 그림은 기록 탭에 있어요 (${all.length - shown.length}묶음)`) : null,
+    hist && all.length > UI.limit ? h('button', { class: 'btn wide', onclick: () => { UI.limit += 20; C.renderView(); } }, `더 보기 (${all.length - UI.limit}묶음 남음)`) : null);
   return root;
+}
+
+// 길게 누르기: 그림 위에 저장·공유 버튼을 띄운다 (짧게 누르면 크게 보기)
+let lpFired = false;
+function longPress(el, fn) {
+  let t = null, x0 = 0, y0 = 0;
+  const cancel = () => { clearTimeout(t); t = null; };
+  el.addEventListener('touchstart', (e) => { x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; lpFired = false; cancel(); t = setTimeout(() => { t = null; lpFired = true; navigator.vibrate?.(20); fn(); setTimeout(() => { lpFired = false; }, 900); }, 450); }, { passive: true });
+  el.addEventListener('touchmove', (e) => { if (Math.hypot(e.touches[0].clientX - x0, e.touches[0].clientY - y0) > 10) cancel(); }, { passive: true });
+  el.addEventListener('touchend', (e) => { cancel(); if (lpFired && e.cancelable) e.preventDefault(); });
+  el.addEventListener('touchcancel', cancel);
+  el.addEventListener('contextmenu', (e) => { e.preventDefault(); if (!lpFired) { lpFired = false; fn(); } });
+}
+function showLp(el, g) {
+  const prev = UI.lp && cardEls.get(UI.lp);
+  UI.lp = g.id;
+  if (prev && prev !== el) prev.querySelector('.sc-lp')?.remove();
+  el.querySelector('.sc-lp')?.remove();
+  el.append(lpMenu(g));
+}
+function hideLp() {
+  const el = UI.lp && cardEls.get(UI.lp);
+  el?.querySelector('.sc-lp')?.remove();
+  UI.lp = null;
+}
+function lpMenu(g) {
+  const go = (fn) => async (e) => { e.stopPropagation(); const b = await store.imageGet(g.imgId); hideLp(); if (b) fn(fileName(g), b); };
+  return h('div', { class: 'sc-lp', onclick: (e) => { if (e.target === e.currentTarget) hideLp(); } },
+    h('button', { type: 'button', class: 'btn primary', onclick: go((n, b) => C.saveBlob(n, b)) }, '⬇ 저장'),
+    h('button', { type: 'button', class: 'btn', onclick: go((n, b) => C.shareBlob(n, b)) }, '공유'),
+    h('button', { type: 'button', class: 'btn ghost', onclick: (e) => { e.stopPropagation(); hideLp(); } }, '닫기'));
 }
 
 // ---------------------------------------------------------------- 생성·예약
@@ -361,6 +455,7 @@ async function processLocal() {
     }
     putGen(g);
     updateCard(g);
+    afterItem(g);
     renderGoBar();
     if (stop) { for (const x of LQ.items) { x.status = 'stop'; putGen(x); updateCard(x); } LQ.items = []; C.toast(g.error, 'bad'); }
   }
@@ -370,6 +465,14 @@ async function processLocal() {
 }
 
 // ---------------------------------------------------------------- 생성 서비스(폰)와 맞추기
+// 묶음이 다 끝났는데 최신 묶음이 아니면 생성 탭에서 빠진다 → 다시 그린다
+function afterItem(g) {
+  if (SC.stab !== 'gen' || C.app() !== 'scene') return;
+  const bs = batches();
+  const b = bs.find((x) => x.ts === g.created);
+  if (b && b !== bs[0] && !pendingBatch(b)) C.renderView();
+}
+
 // 끝난 결과 하나를 가져온다. 상황 뽑기 키면 true (기록이 지워졌어도 받은 것으로 친다).
 export async function takeResult(r) {
   if (!isSceneKey(r.key)) return false;
@@ -392,6 +495,7 @@ export async function takeResult(r) {
   }
   await store.genPut(g).catch(() => {});
   updateCard(g);
+  afterItem(g);
   return true;
 }
 
@@ -408,23 +512,25 @@ export function syncStatus({ current, queueKeys, busy, pending }) {
     if (g.id === current) next = 'run';
     else if (queued.has(g.id)) next = 'wait';
     else if (!busy && !pending) next = 'stop';
-    if (next !== g.status) { g.status = next; if (next === 'stop') putGen(g); updateCard(g); }
+    if (next !== g.status) { g.status = next; if (next === 'stop') { putGen(g); afterItem(g); } updateCard(g); }
     else if (changed && g.status === 'wait') updateCard(g);
   }
   renderGoBar();
 }
 
 // ---------------------------------------------------------------- 뷰어
+const viewerList = () => (UI.viewer?.ids || []).map((id) => G.find((g) => g.id === id)).filter((g) => g && g.status === 'done' && g.imgId);
 function openViewer(id) {
-  const list = doneList();
-  const i = list.findIndex((g) => g.id === id);
+  hideLp();
+  const ids = scopeIds();
+  const i = ids.indexOf(id);
   if (i < 0) return;
-  UI.viewer = { i, zoom: false };
+  UI.viewer = { i, zoom: false, ids };
   renderViewer();
 }
 function closeViewer() { UI.viewer = null; renderViewer(); }
 function stepViewer(d) {
-  const list = doneList();
+  const list = viewerList();
   if (!UI.viewer || !list.length) return;
   UI.viewer.i = (UI.viewer.i + d + list.length) % list.length;
   UI.viewer.zoom = false;
@@ -433,7 +539,7 @@ function stepViewer(d) {
 const shortModel = (m) => (SCENE_MODELS.find(([k]) => k === m)?.[1] || m).replace('NAI Diffusion ', '');
 
 function applyParams(p, withSeed, seed) {
-  const keep = { tab: SC.tab, grid: SC.grid, open: SC.open, count: SC.count };
+  const keep = { tab: SC.tab, grid: SC.grid, hgrid: SC.hgrid, stab: SC.stab, open: SC.open, count: SC.count };
   Object.assign(SC, DEF, JSON.parse(JSON.stringify(p)), keep);
   SC.seed = withSeed ? String(seed) : '';
   save();
@@ -446,7 +552,7 @@ function renderViewer() {
   root.hidden = !UI.viewer;
   document.body.classList.toggle('viewer-open', Boolean(UI.viewer));
   if (!UI.viewer) return;
-  const list = doneList();
+  const list = viewerList();
   const g = list[UI.viewer.i];
   if (!g) { closeViewer(); return; }
   const img = h('img', { class: `sv-img${UI.viewer.zoom ? ' zoom' : ''}`, alt: `시드 ${g.seed}` });
@@ -458,7 +564,7 @@ function renderViewer() {
     onclick: () => { UI.viewer.zoom = !UI.viewer.zoom; renderViewer(); } }, img);
   const p = g.params;
   const e = sceneEffective(p);
-  const name = `NAI_${g.seed}_${C.stamp(g.created)}.png`;
+  const name = fileName(g);
   root.append(
     h('div', { class: 'sv-top' },
       h('div', { class: 'sv-head' }, h('b', { class: 'sv-count' }, `${UI.viewer.i + 1} / ${list.length}`),
@@ -470,7 +576,7 @@ function renderViewer() {
       h('button', { class: 'btn', onclick: () => { SC.seed = String(g.seed); save(); renderSheet(true); C.toast('시드를 넣었어요', 'ok'); } }, '시드 적용'),
       h('button', { class: 'btn', onclick: () => { applyParams(p, false); C.toast('설정을 불러왔어요 (시드 빼고)', 'ok'); } }, '설정 쓰기'),
       h('button', { class: 'btn', onclick: () => { applyParams(p, true, g.seed); C.toast('설정과 시드를 불러왔어요', 'ok'); } }, '설정+시드'),
-      C.confirmBtn('지우기', '한 번 더', () => { deleteGen(g); const n = doneList().length; if (!n) closeViewer(); else { UI.viewer.i = Math.min(UI.viewer.i, n - 1); renderViewer(); } }, 'btn danger')),
+      C.confirmBtn('지우기', '한 번 더', () => { deleteGen(g); UI.viewer.ids = UI.viewer.ids.filter((x) => x !== g.id); const n = viewerList().length; if (!n) closeViewer(); else { UI.viewer.i = Math.min(UI.viewer.i, n - 1); renderViewer(); } }, 'btn danger')),
     h('div', { class: 'sv-bar' },
       h('button', { class: 'btn nav-arrow', onclick: () => stepViewer(-1), 'aria-label': '이전' }, '‹'),
       h('button', { class: 'btn', onclick: async () => { const b = await store.imageGet(g.imgId); if (b) C.saveBlob(name, b); } }, '저장'),
@@ -674,7 +780,9 @@ function renderCounts() {
   const c = document.getElementById('sc-count');
   const waitN = G.filter((g) => g.status === 'wait').length;
   const runN = G.filter((g) => g.status === 'run').length;
-  if (c) c.textContent = G.length ? `기록 ${doneList().length}장${runN ? ' · 생성 중' : ''}${waitN ? ` · 예약 ${waitN}` : ''}` : '';
+  if (c) c.textContent = [runN ? '생성 중' : '', waitN ? `대기 ${waitN}장` : ''].filter(Boolean).join(' · ');
+  const hn = document.getElementById('sc-hist-n');
+  if (hn) hn.textContent = String(doneList().length);
   const b = document.getElementById('sc-clear');
   if (b) b.hidden = !waitN;
 }
@@ -1032,8 +1140,10 @@ function thumbPicker(x) {
 // ---------------------------------------------------------------- 뒤로 가기
 export function sceneBack() {
   if (UI.viewer) { closeViewer(); return true; }
+  if (UI.lp) { hideLp(); return true; }
   if (N.open) { if (N.picker) { N.picker = false; renderNotes(); } else if (N.edit) { leaveNote(); renderNotes(); } else closeNotes(); return true; }
   if (C.app() === 'scene' && UI.snap > 0) { snapTo(0); return true; }
+  if (C.app() === 'scene' && SC.stab === 'hist') { SC.stab = 'gen'; save(); C.renderView(); return true; }
   return false;
 }
 
@@ -1041,6 +1151,7 @@ window.addEventListener('resize', reapplySheet);
 window.visualViewport?.addEventListener('resize', reapplySheet);
 window.addEventListener('pageshow', reapplySheet);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) setTimeout(reapplySheet, 120); });
+document.addEventListener('touchstart', (e) => { if (UI.lp && !e.target.closest?.('.sc-lp')) hideLp(); }, { passive: true, capture: true });
 document.addEventListener('keydown', (e) => {
   if (!UI.viewer) return;
   if (e.key === 'Escape') closeViewer();

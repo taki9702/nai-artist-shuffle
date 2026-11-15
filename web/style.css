@@ -572,3 +572,17 @@ body.scene-mode .toast { bottom: auto; top: calc(72px + env(safe-area-inset-top,
 .thumb-pick { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
 .thumb-cell { padding: 0; border: 0; border-radius: 8px; overflow: hidden; background: var(--panel2); aspect-ratio: 1; }
 .thumb-cell img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+/* v3.1: 생성/기록 탭, 예약 묶음, 길게 눌러 저장 */
+.sc-vtabs { margin-bottom: 2px; }
+.sc-vtabs .sc-tab { flex: 1; font-size: 17px; }
+.sc-batch { display: flex; flex-direction: column; gap: 8px; }
+.sc-batch + .sc-batch { border-top: 1px solid var(--line); padding-top: 12px; }
+.sc-batch-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sc-batch-title { display: flex; flex-direction: column; gap: 1px; }
+.sc-batch-title b { font-size: 16px; }
+.sc-pic, .sc-pic img { -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
+.sc-lp { position: absolute; inset: 0; z-index: 2; background: #0e0f21cc; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 12px; }
+.sc-lp .btn { width: min(220px, 100%); min-height: 48px; font-size: 16px; }
+.sc-list.g3 .sc-lp { gap: 6px; padding: 6px; }
+.sc-list.g3 .sc-lp .btn { min-height: 38px; font-size: 14px; padding: 4px 6px; }
