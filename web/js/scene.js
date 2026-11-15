@@ -263,8 +263,8 @@ function batchHead(b) {
   const fail = b.items.filter((g) => g.status === 'fail' || g.status === 'stop').length;
   return h('div', { class: 'sc-batch-head', id: `bh-${b.ts}` },
       h('div', { class: 'sc-batch-title' },
-        h('b', {}, `${n}장 예약`),
-        h('span', { class: 'muted small' }, `${C.when(b.ts)} · 완료 ${done}/${n}${run ? ' · 생성 중' : ''}${fail ? ` · 실패 ${fail}` : ''}`)),
+        h('b', {}, b.items[0]?.tool ? `🛠 ${b.items[0].toolLabel || b.items[0].tool} · ${n}장` : `${n}장 예약`),
+        h('span', { class: 'muted small' }, `${C.when(b.ts)} · 완료 ${done}/${n}${run ? ' · 생성 중' : ''}${fail ? ` · 실패 ${fail}` : ''}${b.items[0]?.cost != null ? ` · 실제 ${b.items[0].cost} Anlas` : ''}`)),
       h('div', { class: 'row gap6' },
         wait.length ? C.confirmBtn('예약 빼기', '한 번 더', () => removeReserved(wait), 'btn small ghost') : null,
         h('button', { type: 'button', class: 'btn small primary', disabled: !done, onclick: () => saveBatch(b.items) }, `전부 저장 (${done})`)));
@@ -295,6 +295,7 @@ export function viewScene() {
     tabs,
     h('div', { class: 'sc-toolbar' },
       h('button', { type: 'button', class: 'btn small', onclick: openNotes }, '📒 노트'),
+      h('label', { class: 'btn small file-btn' }, '🖼 가져오기', h('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true, onchange: (e) => importToHistory(e.target.files, e.target) })),
       h('span', { class: 'muted small', id: 'sc-count' }),
       h('div', { class: 'seg' }, [1, 2, 3].map((n) => h('button', { type: 'button', class: `seg-b${grid === n ? ' on' : ''}`, onclick: () => { if (hist) SC.hgrid = n; else SC.grid = n; save(); C.renderView(); } }, n === 1 ? '크게' : `${n}열`))),
       clear),
@@ -336,6 +337,7 @@ function lpMenu(g) {
   return h('div', { class: 'sc-lp', onclick: (e) => { if (e.target === e.currentTarget) hideLp(); } },
     h('button', { type: 'button', class: 'btn primary', onclick: go((n, b) => C.saveBlob(n, b)) }, '⬇ 저장'),
     h('button', { type: 'button', class: 'btn', onclick: go((n, b) => C.shareBlob(n, b)) }, '공유'),
+    h('button', { type: 'button', class: 'btn', onclick: (e) => { e.stopPropagation(); openTools(g); } }, '🛠 도구'),
     h('button', { type: 'button', class: 'btn ghost', onclick: (e) => { e.stopPropagation(); hideLp(); } }, '닫기'));
 }
 
@@ -409,6 +411,15 @@ async function removeReserved(list) {
 }
 
 async function retry(g) {
+  if (g.tool && g.tool !== 'import') {
+    const src = G.find((x) => x.id === g.source && x.imgId);
+    if (!src) { C.toast('원본 그림이 지워져서 다시 할 수 없어요', 'bad'); return; }
+    openTools(src);
+    T.tool = g.tool;
+    Object.assign(T.o, g.toolOpts || {});
+    renderTools();
+    return;
+  }
   const bad = validate();
   if (bad) { C.toast(bad, 'bad'); return; }
   g.status = 'wait';
@@ -446,8 +457,8 @@ async function processLocal() {
     let stop = false;
     for (const delay of [...RETRY_DELAYS, null]) {
       try {
-        const png = await generatePayload(buildScenePayload(g.params, g.seed), C.apiKey());
-        await store.imagePut(g.id, new Blob([png], { type: 'image/png' }));
+        const png = g.tool ? await runToolLocal(g) : await generatePayload(buildScenePayload(g.params, g.seed), C.apiKey());
+        await store.imagePut(g.id, png instanceof Blob ? png : new Blob([png], { type: 'image/png' }));
         g.imgId = g.id;
         g.status = 'done';
         g.error = '';
@@ -463,6 +474,7 @@ async function processLocal() {
     putGen(g);
     updateCard(g);
     afterItem(g);
+    settleCost(g.created);
     renderGoBar();
     if (stop) { for (const x of LQ.items) { x.status = 'stop'; putGen(x); updateCard(x); } LQ.items = []; C.toast(g.error, 'bad'); }
   }
@@ -488,10 +500,28 @@ export async function takeResult(r) {
   if (r.status === 'done') {
     try {
       const f = await C.Filesystem.readFile({ path: `gen/img/${r.key}.png`, directory: 'DATA' });
-      await store.imagePut(g.id, new Blob([C.fromBase64(f.data)], { type: 'image/png' }));
+      const blob = new Blob([C.fromBase64(f.data)], { type: 'image/png' });
+      await store.imagePut(g.id, blob);
       g.imgId = g.id;
       g.status = 'done';
       g.error = '';
+      if (g.tool) { const [w, hh] = await imageSize(blob).catch(() => [g.width, g.height]); g.width = w; g.height = hh; }
+      // 배경 제거처럼 여러 장이 오면 같은 묶음에 더 붙인다
+      for (let k = 1; k < (Number(r.count) || 1); k++) {
+        const path = `gen/img/${r.key}_${k}.png`;
+        try {
+          const fk = await C.Filesystem.readFile({ path, directory: 'DATA' });
+          const bk = new Blob([C.fromBase64(fk.data)], { type: 'image/png' });
+          const id = `${g.id}x${k}`;
+          await store.imagePut(id, bk);
+          const [w, hh] = await imageSize(bk).catch(() => [g.width, g.height]);
+          const extra = { ...g, id, no: (g.no || 0) + k / 10, imgId: id, width: w, height: hh, cost: undefined };
+          G.splice(G.indexOf(g), 0, extra);
+          await store.genPut(extra).catch(() => {});
+          C.Filesystem.deleteFile({ path, directory: 'DATA' }).catch(() => {});
+        } catch { /* 없으면 넘어간다 */ }
+      }
+      if ((Number(r.count) || 1) > 1 && SC.stab === 'gen') C.renderView();
     } catch (e) {
       g.status = 'fail';
       g.error = `그림 파일을 읽지 못했어요: ${e?.message || e}`;
@@ -503,6 +533,7 @@ export async function takeResult(r) {
   await store.genPut(g).catch(() => {});
   updateCard(g);
   afterItem(g);
+  settleCost(g.created);
   return true;
 }
 
@@ -519,7 +550,7 @@ export function syncStatus({ current, queueKeys, busy, pending }) {
     if (g.id === current) next = 'run';
     else if (queued.has(g.id)) next = 'wait';
     else if (!busy && !pending) next = 'stop';
-    if (next !== g.status) { g.status = next; if (next === 'stop') { putGen(g); afterItem(g); } updateCard(g); }
+    if (next !== g.status) { g.status = next; if (next === 'stop') { putGen(g); afterItem(g); settleCost(g.created); } updateCard(g); }
     else if (changed && g.status === 'wait') updateCard(g);
   }
   renderGoBar();
@@ -588,6 +619,7 @@ function renderViewer() {
       h('button', { class: 'btn nav-arrow', onclick: () => stepViewer(-1), 'aria-label': '이전' }, '‹'),
       h('button', { class: 'btn', onclick: async () => { const b = await store.imageGet(g.imgId); if (b) C.saveBlob(name, b); } }, '저장'),
       h('button', { class: 'btn', onclick: async () => { const b = await store.imageGet(g.imgId); if (b) C.shareBlob(name, b); } }, '공유'),
+      h('button', { class: 'btn primary', onclick: () => openTools(g) }, '🛠 도구'),
       h('button', { class: 'btn nav-arrow', onclick: () => stepViewer(1), 'aria-label': '다음' }, '›')));
 }
 
@@ -1149,6 +1181,8 @@ function thumbPicker(x) {
 
 // ---------------------------------------------------------------- 뒤로 가기
 export function sceneBack() {
+  if (T.maskOpen) { closeMask(); return true; }
+  if (T.open) { if (T.confirm) { T.confirm = false; renderTools(); } else closeTools(); return true; }
   if (UI.viewer) { closeViewer(); return true; }
   if (UI.lp) { hideLp(); return true; }
   if (N.open) { if (N.picker) { N.picker = false; renderNotes(); } else if (N.edit) { leaveNote(); renderNotes(); } else closeNotes(); return true; }
@@ -1171,3 +1205,479 @@ document.addEventListener('keydown', (e) => {
 
 // EXIF 제거 화면에서 고를 수 있게: 다 받은 그림 목록 (최신이 앞)
 export function sceneImages() { return doneList().map((g) => ({ id: g.id, imgId: g.imgId })); }
+
+// ================================================================ 그림 도구 (업스케일·Enhance·이미지 투 이미지·변형·인페인트·Director)
+// 기록 탭의 예전 그림이나 갤러리에서 가져온 그림에 쓴다. 결과는 기록에 새 묶음으로 쌓이고 원본은 그대로 둔다.
+// 요청 형식은 2026년 웹 클라이언트 기준: 그림은 multipart의 따로 된 파트(JSON에는 파트 이름), 호스트는 image.novelai.net.
+const IMG_HOST = 'https://image.novelai.net';
+const TOOLS = [
+  ['upscale', '업스케일', '해상도 2배 (그림은 그대로)'],
+  ['enhance', 'Enhance', '크게 다시 그려 디테일 살리기'],
+  ['i2i', '이미지 투 이미지', '이 그림을 바탕으로 다시 뽑기'],
+  ['variations', '변형 3장', '비슷한 그림 3장'],
+  ['inpaint', '인페인트', '칠한 부분만 다시 그리기'],
+  ['bg-removal', '배경 제거', 'Director'],
+  ['lineart', '선화', 'Director'],
+  ['sketch', '스케치', 'Director'],
+  ['colorize', '채색', 'Director'],
+  ['emotion', '표정 바꾸기', 'Director'],
+  ['declutter', '정리', 'Director · 글자·효과 지우기'],
+];
+const TOOL_LABEL = Object.fromEntries(TOOLS.map(([k, l]) => [k, l]));
+const ALWAYS_PAID = new Set(['upscale', 'enhance', 'variations', 'bg-removal']);
+const EMOTIONS = [
+  ['neutral', '무표정'], ['happy', '기쁨'], ['sad', '슬픔'], ['angry', '화남'], ['scared', '겁먹음'], ['surprised', '놀람'], ['tired', '피곤'],
+  ['excited', '신남'], ['nervous', '긴장'], ['thinking', '생각 중'], ['confused', '혼란'], ['shy', '수줍음'], ['disgusted', '역겨움'], ['smug', '의기양양'],
+  ['bored', '지루함'], ['laughing', '웃음'], ['irritated', '짜증'], ['embarrassed', '부끄러움'], ['worried', '걱정'], ['love', '사랑'],
+  ['determined', '결의'], ['hurt', '상처'], ['playful', '장난기'],
+];
+const DEFRY = [[0, '보통'], [1, '조금 약하게'], [2, '약하게'], [3, '더 약하게'], [4, '아주 약하게'], [5, '가장 약하게']];
+const INPAINT_MODEL = {
+  'nai-diffusion-5-full': 'nai-diffusion-5-full-inpainting', 'nai-diffusion-5-full-medium': 'nai-diffusion-5-full-medium-inpainting',
+  'nai-diffusion-5-curated': 'nai-diffusion-4-5-curated-inpainting', 'nai-diffusion-4-5-full': 'nai-diffusion-4-5-full-inpainting',
+  'nai-diffusion-4-5-curated': 'nai-diffusion-4-5-curated-inpainting', 'nai-diffusion-4-full': 'nai-diffusion-4-full-inpainting',
+};
+const MAX_PIXELS = 3145728;
+const T = { open: false, g: null, tool: 'upscale', o: {}, confirm: false, mask: null, busy: false };
+let TOOL_COSTS = {};
+store.kvGet('toolCosts').then((v) => { if (v && typeof v === 'object') TOOL_COSTS = v; }).catch(() => {});
+const r64 = (x) => Math.max(64, Math.round(x / 64) * 64);
+const anlasOf = (sub) => (sub && Number.isFinite(sub.anlas) ? sub.anlas : null);
+
+// ---------------------------------------------------------------- 그림 다루기
+async function blobToBitmap(blob) { return createImageBitmap(blob); }
+async function canvasPng(c) { return new Promise((r) => c.toBlob(r, 'image/png')); }
+// 크기를 바꿔 다시 그린다. 투명도는 버린다(그림 속 숨은 정보도 같이 빠진다).
+async function resizePng(blob, w, hh) {
+  const bmp = await blobToBitmap(blob);
+  const c = document.createElement('canvas');
+  c.width = w; c.height = hh;
+  const x = c.getContext('2d', { alpha: false });
+  x.imageSmoothingEnabled = true;
+  x.imageSmoothingQuality = 'high';
+  x.drawImage(bmp, 0, 0, w, hh);
+  bmp.close?.();
+  return canvasPng(c);
+}
+async function imageSize(blob) { const b = await blobToBitmap(blob); const s = [b.width, b.height]; b.close?.(); return s; }
+
+// ---------------------------------------------------------------- 요청 만들기
+// 원본 설정으로 생성 요청을 만든 뒤 도구에 맞게 고친다. prompt를 주면 베이스 프롬프트를 바꿔 쓴다.
+function basePayload(g, seed, prompt) {
+  const p = { ...g.params, seed: '' };
+  if (typeof prompt === 'string') p.prompt = prompt;
+  if (!String(p.prompt || '').trim()) p.prompt = 'masterpiece';
+  const payload = buildScenePayload(p, seed);
+  payload.parameters.image_format = 'png';
+  payload.parameters.extra_noise_seed = Math.max(0, seed - 1);
+  return payload;
+}
+function setSize(payload, w, hh) { payload.parameters.width = w; payload.parameters.height = hh; }
+function addSuffix(payload, suffix) {
+  const trim = (t) => String(t).replace(/[,\s]+$/, '');
+  payload.input = trim(payload.input) + suffix;
+  payload.parameters.v4_prompt.caption.base_caption = trim(payload.parameters.v4_prompt.caption.base_caption) + suffix;
+}
+
+// 도구 하나를 작업 목록으로: [{body, url, files:{image?, mask?}, inline?, alt?, size:[w,h], params}]
+async function buildToolJobs(g, tool, o) {
+  const src = await store.imageGet(g.imgId);
+  if (!src) throw new Error('원본 그림을 찾지 못했어요');
+  const [sw, sh] = await imageSize(src);
+  const seed = () => randomSeed();
+  const fitW = r64(sw), fitH = r64(sh);
+  const prompt = typeof o.prompt === 'string' ? o.prompt : g.params?.prompt;
+  if (tool === 'upscale') {
+    if (sw * sh > MAX_PIXELS) throw new Error('이 그림은 너무 커서 업스케일할 수 없어요 (최대 약 3.1MP)');
+    return [{ url: `${IMG_HOST}/ai/upscale`, body: { image: 'image', model: 'nai-diffusion-5-curated', declared_blur_sigma: 0 }, files: { image: src }, size: [sw * 2, sh * 2] }];
+  }
+  if (tool === 'enhance') {
+    const max = o.level === 'max';
+    const s = seed();
+    const payload = basePayload(g, s, prompt);
+    payload.action = 'img2img';
+    Object.assign(payload.parameters, { image: 'image', strength: Number(o.strength ?? 0.5), noise: Number(o.noise ?? 0), color_correct: false });
+    if (max) {
+      setSize(payload, fitW, fitH);
+      payload.parameters.upscaled_enhance = true;
+      const img = sw === fitW && sh === fitH ? src : await resizePng(src, fitW, fitH);
+      return [{ body: payload, files: { image: img }, size: [Math.round(fitW * 1.76), Math.round(fitH * 1.76)], params: { ...g.params, prompt } }];
+    }
+    const iw = Math.round(sw * 1.5), ih = Math.round(sh * 1.5);
+    const rw = r64(iw), rh = r64(ih);
+    if (rw * rh > MAX_PIXELS) throw new Error('1.5배로 키우면 너무 커요 (최대 약 3.1MP). Max✨를 써 보세요');
+    setSize(payload, rw, rh);
+    if (/nai-diffusion-(4-5|5)/.test(payload.model)) addSuffix(payload, ', -2::upscaled, blurry::,');
+    return [{ body: payload, files: { image: await resizePng(src, iw, ih) }, size: [rw, rh], params: { ...g.params, prompt } }];
+  }
+  if (tool === 'i2i' || tool === 'variations') {
+    const img = await resizePng(src, fitW, fitH);
+    const n = tool === 'variations' ? 3 : 1;
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const s = tool === 'variations' ? ((g.seed || 0) + i + 1) % MAX_SEED : (o.keepSeed && g.seed ? g.seed : seed());
+      const payload = basePayload(g, s, prompt);
+      payload.action = 'img2img';
+      setSize(payload, fitW, fitH);
+      Object.assign(payload.parameters, { image: 'image', strength: Number(tool === 'variations' ? 0.8 : o.strength ?? 0.7), noise: Number(tool === 'variations' ? 0.1 : o.noise ?? 0.2) });
+      if (tool === 'variations') payload.parameters.extra_noise_seed = g.seed || s;
+      out.push({ body: payload, files: { image: img }, size: [fitW, fitH], seed: s, params: { ...g.params, prompt } });
+    }
+    return out;
+  }
+  if (tool === 'inpaint') {
+    if (!T.mask) throw new Error('다시 그릴 곳을 먼저 칠해 주세요');
+    const s = seed();
+    const payload = basePayload(g, s, prompt);
+    const model = INPAINT_MODEL[payload.model];
+    if (!model) throw new Error('이 모델은 인페인트를 지원하지 않아요');
+    payload.model = model;
+    payload.action = 'infill';
+    setSize(payload, fitW, fitH);
+    const strength = Number(o.strength ?? 1);
+    Object.assign(payload.parameters, { image: 'image', mask: 'mask', add_original_image: true, inpaintImg2ImgStrength: strength });
+    if (strength < 1) payload.parameters.img2img = { strength, color_correct: true };
+    return [{ body: payload, files: { image: await resizePng(src, fitW, fitH), mask: await maskPng(fitW, fitH) }, size: [fitW, fitH], params: { ...g.params, prompt } }];
+  }
+  // Director: JSON(그림은 base64)로 먼저 보내고, 거절되면 multipart로 한 번 더 (어느 쪽이 맞는지 아직 확인 전)
+  const body = { req_type: tool, width: sw, height: sh, image: 'image' };
+  if (tool === 'colorize') { body.prompt = String(o.prompt ?? '').trim(); body.defry = Number(o.defry ?? 0); }
+  if (tool === 'emotion') { const extra = String(o.prompt ?? '').trim(); body.prompt = `${o.emotion || 'happy'};;${extra}${extra ? ';' : ''}`; body.defry = Number(o.defry ?? 0); }
+  return [{ url: `${IMG_HOST}/ai/augment-image`, body, files: { image: src }, director: true, size: [sw, sh] }];
+}
+
+// ---------------------------------------------------------------- 인페인트 마스크 칠하기 (흰색 = 다시 그림)
+function maskPng(w, hh) {
+  const m = T.mask;
+  const c = document.createElement('canvas');
+  c.width = w; c.height = hh;
+  const x = c.getContext('2d');
+  x.fillStyle = '#000';
+  x.fillRect(0, 0, w, hh);
+  // 8px 격자로 맞춘다 (NAI 웹처럼 가장자리가 칸에 딱 맞게)
+  const small = document.createElement('canvas');
+  small.width = Math.ceil(w / 8); small.height = Math.ceil(hh / 8);
+  const sx = small.getContext('2d');
+  sx.drawImage(m, 0, 0, small.width, small.height);
+  const d = sx.getImageData(0, 0, small.width, small.height);
+  for (let i = 0; i < d.data.length; i += 4) { const on = d.data[i + 3] > 20; d.data[i] = d.data[i + 1] = d.data[i + 2] = on ? 255 : 0; d.data[i + 3] = on ? 255 : 0; }
+  sx.putImageData(d, 0, 0);
+  x.imageSmoothingEnabled = false;
+  x.drawImage(small, 0, 0, w, hh);
+  return canvasPng(c);
+}
+async function openMask() {
+  const g = T.g;
+  const src = await store.imageGet(g.imgId);
+  const [w, hh] = await imageSize(src);
+  const fw = r64(w), fh = r64(hh);
+  if (!T.mask || T.mask.width !== fw || T.mask.height !== fh) { T.mask = document.createElement('canvas'); T.mask.width = fw; T.mask.height = fh; }
+  T.maskOpen = true;
+  T.brush = T.brush || 48;
+  T.erase = false;
+  const root = document.getElementById('smask');
+  root.innerHTML = '';
+  root.hidden = false;
+  const img = h('img', { class: 'mk-img', alt: '' });
+  urlFor(g.imgId).then((u) => { if (u) img.src = u; });
+  const view = document.createElement('canvas');
+  view.className = 'mk-canvas';
+  view.width = fw; view.height = fh;
+  const vx = view.getContext('2d');
+  const redraw = () => { vx.clearRect(0, 0, fw, fh); vx.globalAlpha = 0.55; vx.drawImage(T.mask, 0, 0); vx.globalAlpha = 1; };
+  const mx = T.mask.getContext('2d');
+  let last = null;
+  const pt = (e) => { const r = view.getBoundingClientRect(); return [(e.clientX - r.left) * fw / r.width, (e.clientY - r.top) * fh / r.height]; };
+  const stroke = (a, b) => {
+    mx.globalCompositeOperation = T.erase ? 'destination-out' : 'source-over';
+    mx.strokeStyle = '#ff4d8d';
+    mx.fillStyle = '#ff4d8d';
+    mx.lineCap = 'round';
+    mx.lineWidth = T.brush * 2;
+    mx.beginPath();
+    mx.moveTo(a[0], a[1]);
+    mx.lineTo(b[0], b[1]);
+    mx.stroke();
+    redraw();
+  };
+  view.addEventListener('pointerdown', (e) => { view.setPointerCapture(e.pointerId); last = pt(e); stroke(last, [last[0] + 0.1, last[1]]); });
+  view.addEventListener('pointermove', (e) => { if (!last) return; const p = pt(e); stroke(last, p); last = p; });
+  const up = () => { last = null; };
+  view.addEventListener('pointerup', up);
+  view.addEventListener('pointercancel', up);
+  redraw();
+  const frame = h('div', { class: 'mk-frame' }, img, view);
+  const stage = h('div', { class: 'mk-stage' }, frame);
+  // 화면에 맞게 크기 정하기 (그림 비율 그대로)
+  const fit = () => { const r = stage.getBoundingClientRect(); const k = Math.min((r.width - 12) / fw, (r.height - 12) / fh); frame.style.width = `${fw * k}px`; frame.style.height = `${fh * k}px`; };
+  requestAnimationFrame(fit);
+  const brushVal = h('span', { class: 'sl-val' }, String(T.brush));
+  const eraseBtn = h('button', { class: 'btn small', onclick: () => { T.erase = !T.erase; eraseBtn.classList.toggle('primary', T.erase); eraseBtn.textContent = T.erase ? '지우개 켜짐' : '지우개'; } }, '지우개');
+  root.append(
+    h('div', { class: 'mk-top' },
+      h('b', {}, '다시 그릴 곳을 손가락으로 칠하세요'),
+      h('button', { class: 'btn small primary', onclick: closeMask }, '완료')),
+    stage,
+    h('div', { class: 'mk-bar' },
+      h('label', { class: 'sl' }, h('span', { class: 'sl-head' }, h('span', {}, '붓 크기'), brushVal),
+        h('input', { type: 'range', min: 8, max: 160, step: 4, value: T.brush, oninput: (e) => { T.brush = Number(e.target.value); brushVal.textContent = String(T.brush); } })),
+      h('div', { class: 'row gap6' }, eraseBtn,
+        h('button', { class: 'btn small ghost', onclick: () => { mx.clearRect(0, 0, fw, fh); redraw(); } }, '전부 지우기'))));
+}
+function closeMask() {
+  T.maskOpen = false;
+  const root = document.getElementById('smask');
+  root.hidden = true;
+  root.innerHTML = '';
+  renderTools();
+}
+const maskEmpty = () => {
+  if (!T.mask) return true;
+  const d = T.mask.getContext('2d').getImageData(0, 0, T.mask.width, T.mask.height).data;
+  for (let i = 3; i < d.length; i += 16) if (d[i] > 20) return false;
+  return true;
+};
+
+// ---------------------------------------------------------------- 실행: 기록에 새 묶음을 만들고 생성 서비스 대기열에 넣는다
+const pendingCost = new Map();  // 묶음 created → {before, tool}
+async function runTool() {
+  const g = T.g, tool = T.tool, o = { ...T.o };
+  if (!C.apiKey() && !globalThis.__mock) { C.toast('설정(⚙)에서 NovelAI API 키를 먼저 넣어 주세요.', 'bad'); return; }
+  if (tool === 'inpaint' && maskEmpty()) { C.toast('다시 그릴 곳을 먼저 칠해 주세요', 'bad'); return; }
+  T.busy = true;
+  renderTools();
+  let specs;
+  try { specs = await buildToolJobs(g, tool, o); } catch (e) { T.busy = false; renderTools(); C.toast(e?.message || String(e), 'bad'); return; }
+  const ts = Date.now();
+  // 실제 비용 재기: 다른 작업이 안 돌 때만 (앞뒤 잔액 차이)
+  if (!busyCount() && !globalThis.__mock) {
+    await C.refreshSub();
+    const before = anlasOf(C.sub());
+    if (before != null) pendingCost.set(ts, { before, tool });
+  }
+  const label = tool === 'enhance' && o.level === 'max' ? 'Enhance Max✨' : tool === 'emotion' ? `표정: ${EMOTIONS.find(([k]) => k === o.emotion)?.[1] || o.emotion}` : TOOL_LABEL[tool];
+  const recs = specs.map((sp, i) => ({
+    id: `s${ts}_${i}`, no: i, created: ts, status: 'wait', seed: sp.seed ?? (sp.body?.parameters?.seed ?? g.seed ?? 0),
+    params: sp.params || g.params, width: sp.size[0], height: sp.size[1], error: '', imgId: null,
+    tool, toolLabel: label, source: g.id, toolOpts: o,
+  }));
+  G.unshift(...recs.slice().reverse());
+  for (const r of recs) putGen(r);
+  try {
+    if (C.native) await enqueueToolNative(recs, specs);
+    else { recs.forEach((r, i) => { r._spec = specs[i]; LQ.items.push(r); }); if (!LQ.busy) processLocal(); }
+  } catch (e) {
+    for (const r of recs) { r.status = 'stop'; r.error = String(e?.message || e); putGen(r); }
+    C.toast(`도구를 시작하지 못했어요: ${e?.message || e}`, 'bad');
+  }
+  T.busy = false;
+  closeTools();
+  closeViewer();
+  SC.stab = 'gen';
+  save();
+  C.renderView();
+  renderGoBar();
+  C.toast(`${label} 작업을 넣었어요`, 'ok');
+}
+
+async function writeIn(path, blob) {
+  await C.Filesystem.writeFile({ path, directory: 'DATA', data: C.toBase64(new Uint8Array(await blob.arrayBuffer())), recursive: true });
+}
+async function enqueueToolNative(recs, specs) {
+  const jobs = [];
+  for (let i = 0; i < recs.length; i++) {
+    const r = recs[i], sp = specs[i];
+    const parts = [];
+    for (const [name, blob] of Object.entries(sp.files || {})) {
+      const path = `gen/in/${r.id}_${name}.png`;
+      await writeIn(path, blob);
+      parts.push({ name, path, type: 'image/png' });
+    }
+    const job = { key: r.id, url: sp.url || `${IMG_HOST}/ai/generate-image`, body: JSON.stringify(sp.body), parts, tool: true };
+    if (sp.director) {
+      // 먼저 JSON + base64, 거절되면 multipart
+      const imagePart = parts.find((p) => p.name === 'image');
+      const jsonBody = { ...sp.body };
+      delete jsonBody.image;
+      job.body = JSON.stringify(jsonBody);
+      job.parts = [];
+      job.inline = { field: 'image', path: imagePart.path };
+      job.alt = { body: JSON.stringify(sp.body), parts };
+    }
+    jobs.push(job);
+  }
+  UI.queueKeys = [...UI.queueKeys, ...recs.map((r) => r.id)];
+  C.pending(1);
+  try { await C.Gen.genEnqueue({ apiKey: C.apiKey(), jobs }); } finally { C.pending(-1); }
+  C.sync();
+}
+
+// 브라우저 미리보기: 가짜 그림 (실제 요청은 폰에서만)
+async function runToolLocal(g) {
+  const sp = g._spec;
+  if (!globalThis.__mock) throw new Error('도구는 폰 앱에서만 실행돼요');
+  const c = document.createElement('canvas');
+  c.width = Math.max(64, Math.round(sp.size[0] / 8)); c.height = Math.max(64, Math.round(sp.size[1] / 8));
+  const x = c.getContext('2d');
+  const src = await store.imageGet(T.g?.imgId || G.find((y) => y.id === g.source)?.imgId);
+  if (src) { const b = await blobToBitmap(src); x.drawImage(b, 0, 0, c.width, c.height); b.close?.(); }
+  x.fillStyle = '#ffffffcc';
+  x.font = 'bold 14px sans-serif';
+  x.fillText(g.toolLabel, 6, 18);
+  await new Promise((r) => setTimeout(r, 400));
+  return canvasPng(c);
+}
+
+// 묶음이 다 끝나면 잔액을 다시 보고 실제 비용을 적어 둔다
+async function settleCost(ts) {
+  const pc = pendingCost.get(ts);
+  if (!pc) return;
+  const items = G.filter((x) => x.created === ts);
+  if (items.some((x) => x.status === 'wait' || x.status === 'run')) return;
+  pendingCost.delete(ts);
+  if (busyCount()) return;  // 다른 작업이 끼어 있으면 못 잰다
+  await C.refreshSub();
+  const after = anlasOf(C.sub());
+  if (after == null) return;
+  const cost = Math.max(0, pc.before - after);
+  const first = items[0];
+  if (first) { first.cost = cost; putGen(first); refreshBatchHead(ts); }
+  TOOL_COSTS[pc.tool] = { cost, at: Date.now() };
+  store.kvSet('toolCosts', TOOL_COSTS).catch(() => {});
+  C.toast(`${TOOL_LABEL[pc.tool] || pc.tool}: 실제로 ${cost} Anlas 들었어요`, cost ? undefined : 'ok');
+}
+
+// ---------------------------------------------------------------- 도구 창
+function openTools(g) {
+  if (!g || !g.imgId) return;
+  T.open = true;
+  T.g = g;
+  T.confirm = false;
+  T.mask = null;
+  T.o = { prompt: g.params?.prompt || '', strength: undefined, noise: undefined, level: '1.5', emotion: 'happy', defry: 0 };
+  hideLp();
+  renderTools();
+}
+function closeTools() { T.open = false; T.confirm = false; renderTools(); }
+function toolNeedsConfirm(tool) {
+  if (ALWAYS_PAID.has(tool)) return true;
+  return (TOOL_COSTS[tool]?.cost || 0) > 0;
+}
+
+function renderTools() {
+  const root = document.getElementById('stools');
+  root.innerHTML = '';
+  root.hidden = !T.open;
+  document.body.classList.toggle('sheet-open', T.open || N.open);
+  if (!T.open) return;
+  const g = T.g, tool = T.tool, o = T.o;
+  const panel = h('div', { class: 'sheet-panel tools-panel', role: 'dialog', 'aria-label': '그림 도구' });
+  root.append(h('div', { class: 'sheet-back', onclick: closeTools }), panel);
+  const thumb = h('img', { alt: '' });
+  urlFor(g.imgId).then((u) => { if (u) thumb.src = u; });
+  const p = g.params || {};
+  const field = (label, el) => h('label', { class: 'field' }, h('span', { class: 'field-label' }, label), el);
+  const sliderO = (key, label, min, max, step, def) => {
+    if (o[key] === undefined) o[key] = def;
+    const out = h('span', { class: 'sl-val' }, Number(o[key]).toFixed(2));
+    return h('label', { class: 'sl' }, h('span', { class: 'sl-head' }, h('span', {}, label), out),
+      h('input', { type: 'range', min, max, step, value: o[key], oninput: (e) => { o[key] = Number(e.target.value); out.textContent = o[key].toFixed(2); } }));
+  };
+  const promptEd = () => editor({ get: () => o.prompt || '', set: (v) => { o.prompt = v; }, placeholder: '베이스 프롬프트 (원본 그대로면 손대지 않아도 돼요)' });
+  const opts = [];
+  if (tool === 'upscale') opts.push(h('p', { class: 'muted small' }, `${g.width}×${g.height} → ${g.width * 2}×${g.height * 2}. 그림은 바뀌지 않고 크기만 2배가 돼요.`));
+  if (tool === 'enhance') {
+    const v5 = /nai-diffusion-5-full/.test(sceneEffective(p).model || p.model);
+    opts.push(h('div', { class: 'seg' }, [['1.5', '1.5배'], ...(v5 ? [['max', 'Max✨']] : [])].map(([v, l]) => h('button', { type: 'button', class: `seg-b${o.level === v ? ' on' : ''}`, onclick: () => { o.level = v; renderTools(); } }, l))),
+      h('p', { class: 'muted small' }, o.level === 'max' ? '원래 크기로 다시 그린 뒤 서버의 새 업스케일러가 크게 키워요 (약 1.76배, 더 선명).' : '1.5배로 키워서 다시 그려요. 프롬프트 끝에 흐림 방지 태그가 자동으로 붙어요.'),
+      sliderO('strength', '강도 (Strength)', 0.1, 0.9, 0.05, 0.5), sliderO('noise', '노이즈', 0, 0.5, 0.05, 0),
+      h('p', { class: 'muted small' }, 'NAI 기본(Magnitude 2)은 강도 0.5, 노이즈 0이에요.'), field('프롬프트', promptEd()));
+  }
+  if (tool === 'i2i') opts.push(sliderO('strength', '강도 (높을수록 많이 바뀜)', 0.05, 0.99, 0.01, 0.7), sliderO('noise', '노이즈', 0, 0.99, 0.01, 0.2),
+    h('label', { class: 'row gap6 check-row' }, h('input', { type: 'checkbox', checked: Boolean(o.keepSeed), onchange: (e) => { o.keepSeed = e.target.checked; } }), h('span', {}, '원본 시드 그대로 쓰기')),
+    field('프롬프트', promptEd()));
+  if (tool === 'variations') opts.push(h('p', { class: 'muted small' }, '원본 설정으로 비슷한 그림 3장을 만들어요 (강도 0.8, 노이즈 0.1, 시드 +1~+3).'), field('프롬프트', promptEd()));
+  if (tool === 'inpaint') opts.push(
+    h('button', { class: 'btn wide', onclick: openMask }, T.mask && !maskEmpty() ? '🖌 칠한 곳 고치기' : '🖌 다시 그릴 곳 칠하기'),
+    sliderO('strength', '원본 유지 (1 = 칠한 곳만 완전히 새로)', 0.1, 1, 0.05, 1), field('프롬프트 (칠한 곳에 그릴 것)', promptEd()));
+  if (tool === 'colorize') opts.push(field('색 지정 (태그, 비워도 됨)', h('input', { type: 'text', value: o.prompt === p.prompt ? '' : o.prompt || '', placeholder: 'red hair, blue dress', oninput: (e) => { o.prompt = e.target.value; } })),
+    field('바꾸는 정도', h('select', { onchange: (e) => { o.defry = Number(e.target.value); } }, DEFRY.map(([v, l]) => h('option', { value: v, selected: Number(o.defry) === v }, `${l} (${v})`)))));
+  if (tool === 'emotion') opts.push(
+    h('div', { class: 'emo-grid' }, EMOTIONS.map(([k, l]) => h('button', { type: 'button', class: `emo${o.emotion === k ? ' on' : ''}`, onclick: () => { o.emotion = k; renderTools(); } }, l))),
+    field('추가 태그 (비워도 됨)', h('input', { type: 'text', value: o.prompt === p.prompt ? '' : o.prompt || '', placeholder: 'blush, tears', oninput: (e) => { o.prompt = e.target.value; } })),
+    field('표정 세기', h('select', { onchange: (e) => { o.defry = Number(e.target.value); } }, DEFRY.map(([v, l]) => h('option', { value: v, selected: Number(o.defry) === v }, `${l} (${v})`)))),
+    h('p', { class: 'muted small' }, '정면 얼굴, 캐릭터 한 명일 때 가장 잘 돼요.'));
+  if (['bg-removal', 'lineart', 'sketch', 'declutter'].includes(tool)) opts.push(h('p', { class: 'muted small' }, tool === 'bg-removal' ? '결과가 여러 장(배경만 지운 것 / 새로 그린 것 / 섞은 것) 올 수 있어요.' : '설정 없이 바로 실행해요.'));
+  // colorize·emotion은 원본 프롬프트를 쓰지 않는다
+  if ((tool === 'colorize' || tool === 'emotion') && o.prompt === p.prompt) o.prompt = '';
+  const last = TOOL_COSTS[tool];
+  const sub = C.sub();
+  const costLine = h('div', { class: 'tool-cost' },
+    ALWAYS_PAID.has(tool) ? h('b', { class: 'go-paid' }, 'Anlas가 들어요') : h('span', { class: 'muted' }, 'Opus면 무료일 수 있어요'),
+    h('span', { class: 'muted small' }, ' (해상도·설정에 따라 달라요)'),
+    anlasOf(sub) != null ? h('span', { class: 'small' }, ` · 지금 잔액 ${anlasOf(sub).toLocaleString('ko-KR')}`) : null,
+    last ? h('div', { class: 'muted small' }, `최근 실제 비용: ${last.cost} Anlas (${C.when(last.at)})`) : null);
+  const run = T.confirm
+    ? h('div', { class: 'tool-confirm' },
+      h('b', {}, `${TOOL_LABEL[tool]}에 Anlas가 들어요. 실행할까요?`),
+      h('div', { class: 'row gap6' },
+        h('button', { class: 'btn ghost', onclick: () => { T.confirm = false; renderTools(); } }, '취소'),
+        h('button', { class: 'btn primary grow', disabled: T.busy, onclick: () => { T.confirm = false; runTool(); } }, T.busy ? '준비 중…' : '실행하기')))
+    : h('button', { class: 'btn primary wide tool-run', disabled: T.busy, onclick: () => { if (toolNeedsConfirm(tool)) { T.confirm = true; renderTools(); } else runTool(); } }, T.busy ? '준비 중…' : `${TOOL_LABEL[tool]} 실행`);
+  panel.append(...[
+    h('div', { class: 'row between' }, h('div', { class: 'sheet-title' }, '🛠 그림 도구'), h('button', { class: 'btn small ghost', onclick: closeTools }, '닫기')),
+    h('div', { class: 'tool-src' }, h('div', { class: 'tool-thumb' }, thumb),
+      h('div', { class: 'note-text' }, h('b', {}, `${g.width}×${g.height}`), h('span', { class: 'muted small' }, `시드 ${g.seed || '-'} · ${shortModel(p.model || '')}`), g.toolLabel ? h('span', { class: 'muted small' }, `🛠 ${g.toolLabel} 결과`) : null)),
+    h('div', { class: 'tool-grid' }, TOOLS.map(([k, l, d]) => h('button', { type: 'button', class: `tool-b${tool === k ? ' on' : ''}`, onclick: () => { T.tool = k; T.confirm = false; if (k !== 'colorize' && k !== 'emotion' && !o.prompt) o.prompt = p.prompt || ''; o.strength = undefined; o.noise = undefined; renderTools(); } }, h('b', {}, l), h('span', {}, d)))),
+    h('section', { class: 'tool-opts' }, ...opts),
+    costLine, run].filter(Boolean));
+}
+
+// ---------------------------------------------------------------- 갤러리 그림 가져오기: 기록에 '가져온 그림' 묶음으로 (NAI 생성 정보가 있으면 프롬프트·설정도)
+function metaParams(m) {
+  const p = snapshot();
+  let prompt = m.v4_prompt?.caption?.base_caption ?? m.prompt ?? '';
+  p.quality = 'none';
+  QSUFFIX.forEach((s, i) => { if (prompt.endsWith(s)) { prompt = prompt.slice(0, -s.length); p.quality = i ? 'light' : 'standard'; } });
+  p.prompt = prompt;
+  p.negative = m.v4_negative_prompt?.caption?.base_caption ?? m.uc ?? '';
+  p.ucPreset = 'none';
+  const pc = m.v4_prompt?.caption?.char_captions || [], nc = m.v4_negative_prompt?.caption?.char_captions || [];
+  p.chars = pc.map((c, i) => ({ prompt: c.char_caption || '', uc: nc[i]?.char_caption || '', enabled: true, pos: c.centers?.[0] || { x: 0.5, y: 0.5 } }));
+  p.posMode = m.v4_prompt?.use_coords ? 'custom' : 'ai';
+  if (m.steps) p.steps = m.steps;
+  if (m.scale != null) p.scale = m.scale;
+  if (m.cfg_rescale != null) p.rescale = m.cfg_rescale;
+  if (m.sampler && SCENE_SAMPLERS.some(([k]) => k === m.sampler)) p.sampler = m.sampler;
+  if (m.width && m.height) { p.size = 'custom'; p.width = m.width; p.height = m.height; }
+  return p;
+}
+async function importToHistory(files, input) {
+  const list = [...(files || [])].filter((f) => String(f.type || '').startsWith('image/'));
+  if (!list.length) return;
+  const ts = Date.now();
+  let withMeta = 0;
+  for (let i = 0; i < list.length; i++) {
+    const f = list[i];
+    let params = { ...snapshot(), prompt: '' }, seed = 0;
+    try {
+      const t = await readPngText(f);
+      if (t.Comment) { const m = JSON.parse(t.Comment); params = metaParams(m); seed = Number(m.seed) || 0; withMeta++; }
+    } catch { /* PNG가 아니거나 정보 없음 */ }
+    const [w, hh] = await imageSize(f).catch(() => [832, 1216]);
+    const id = `s${ts}_${i}`;
+    await store.imagePut(id, f);
+    const g = { id, no: i, created: ts, status: 'done', seed, params, width: w, height: hh, error: '', imgId: id, tool: 'import', toolLabel: '가져온 그림' };
+    G.unshift(g);
+    putGen(g);
+  }
+  G.sort((a, b) => b.created - a.created || (b.no || 0) - (a.no || 0));
+  if (input) input.value = '';
+  SC.stab = 'gen';
+  save();
+  C.renderView();
+  C.toast(`${list.length}장 가져왔어요${withMeta ? ` (생성 정보 ${withMeta}장)` : ''}. 길게 누르거나 크게 봐서 🛠 도구를 쓰세요`, 'ok');
+}
+
+// 브라우저 시험용 (가짜 모드에서만)
+globalThis.__naiTools = { buildToolJobs, T, G: () => G, openTools };

@@ -172,7 +172,8 @@ public class ScreenAwakePlugin extends Plugin {
                 }
                 for (int i = 0; i < jobs.length(); i++) {
                     JSONObject j = jobs.getJSONObject(i);
-                    JSONObject o = new JSONObject();
+                    // 도구 작업은 url·parts(멀티파트 그림 파일)·inline·alt·tool 필드를 더 가진다
+                    JSONObject o = new JSONObject(j.toString());
                     o.put("key", j.getString("key"));
                     o.put("body", j.getString("body"));
                     o.put("apiKey", apiKey);
@@ -340,6 +341,7 @@ import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.PowerManager;
+import android.util.Base64;
 import androidx.core.app.NotificationCompat;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -353,6 +355,8 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -569,36 +573,100 @@ public class GenerationService extends Service {
         }
     }
 
-    static byte[] extractPng(byte[] d) throws IOException {
-        if (d.length > 8 && (d[0] & 0xff) == 0x89 && d[1] == 'P' && d[2] == 'N' && d[3] == 'G') return d;
+    static boolean isImage(byte[] d) {
+        if (d.length < 12) return false;
+        if ((d[0] & 0xff) == 0x89 && d[1] == 'P' && d[2] == 'N' && d[3] == 'G') return true;
+        if ((d[0] & 0xff) == 0xFF && (d[1] & 0xff) == 0xD8) return true;
+        return d[0] == 'R' && d[1] == 'I' && d[2] == 'F' && d[3] == 'F' && d[8] == 'W' && d[9] == 'E' && d[10] == 'B' && d[11] == 'P';
+    }
+
+    // 응답이 ZIP이면 안의 그림을 전부(배경 제거는 여러 장), 그림 그대로면 그 한 장
+    static List<byte[]> extractImages(byte[] d) throws IOException {
+        List<byte[]> out = new ArrayList<>();
+        if (isImage(d)) { out.add(d); return out; }
         ZipInputStream z = new ZipInputStream(new ByteArrayInputStream(d));
         try {
             ZipEntry e;
             while ((e = z.getNextEntry()) != null) {
-                if (e.getName().toLowerCase().endsWith(".png")) return readAll(z);
+                String n = e.getName().toLowerCase();
+                if (n.endsWith(".png") || n.endsWith(".webp") || n.endsWith(".jpg") || n.endsWith(".jpeg")) out.add(readAll(z));
             }
         } finally { z.close(); }
-        return null;
+        return out;
+    }
+
+    private byte[] readFileRel(String rel) throws IOException {
+        InputStream in = new FileInputStream(new File(getFilesDir(), rel));
+        try { return readAll(in); } finally { in.close(); }
+    }
+
+    // multipart/form-data: JSON은 "request" 파트, 그림은 각자 이름의 image/png 파트 (JSON 안에는 파트 이름)
+    private byte[] multipart(String boundary, String json, JSONArray parts) throws Exception {
+        ByteArrayOutputStream b = new ByteArrayOutputStream();
+        // 템플릿 문자열 안이라 백슬래시를 쓰지 않는다: q = 큰따옴표, crlf = 줄바꿈
+        String q = String.valueOf((char) 34);
+        String crlf = String.valueOf((char) 13) + (char) 10;
+        b.write(("--" + boundary + crlf + "Content-Disposition: form-data; name=" + q + "request" + q + "; filename=" + q + "blob" + q + crlf + "Content-Type: application/json" + crlf + crlf).getBytes("UTF-8"));
+        b.write(json.getBytes("UTF-8"));
+        b.write(crlf.getBytes("UTF-8"));
+        for (int i = 0; i < parts.length(); i++) {
+            JSONObject p = parts.getJSONObject(i);
+            String name = p.getString("name");
+            b.write(("--" + boundary + crlf + "Content-Disposition: form-data; name=" + q + name + q + "; filename=" + q + name + ".png" + q + crlf + "Content-Type: " + p.optString("type", "image/png") + crlf + crlf).getBytes("UTF-8"));
+            b.write(readFileRel(p.getString("path")));
+            b.write(crlf.getBytes("UTF-8"));
+        }
+        b.write(("--" + boundary + "--" + crlf).getBytes("UTF-8"));
+        return b.toByteArray();
+    }
+
+    private void deleteInputs(JSONObject spec) {
+        if (spec == null) return;
+        JSONArray parts = spec.optJSONArray("parts");
+        if (parts != null) for (int i = 0; i < parts.length(); i++) { JSONObject p = parts.optJSONObject(i); if (p != null) new File(getFilesDir(), p.optString("path")).delete(); }
+        JSONObject inline = spec.optJSONObject("inline");
+        if (inline != null) new File(getFilesDir(), inline.optString("path")).delete();
     }
 
     private JSONObject process(JSONObject job) {
         JSONObject res = new JSONObject();
         String key = job.optString("key");
         String lastErr = "";
+        String url = job.optString("url", GEN_URL);
+        boolean tool = job.optBoolean("tool", false);
+        JSONObject alt = job.optJSONObject("alt");
+        JSONObject spec = job;
         try {
             res.put("key", key);
-            byte[] body = job.getString("body").getBytes("UTF-8");
             String apiKey = job.optString("apiKey", "").trim();
             for (int attempt = 0; attempt <= RETRY_DELAYS.length; attempt++) {
                 if (cancel) { res.put("status", "stop"); res.put("error", fatal != null ? fatal : "멈췄어요"); return res; }
                 try {
-                    HttpURLConnection c = (HttpURLConnection) new URL(GEN_URL).openConnection();
+                    String bodyStr = spec.getString("body");
+                    JSONObject inline = spec.optJSONObject("inline");
+                    if (inline != null) {
+                        JSONObject bj = new JSONObject(bodyStr);
+                        bj.put(inline.getString("field"), Base64.encodeToString(readFileRel(inline.getString("path")), Base64.NO_WRAP));
+                        bodyStr = bj.toString();
+                    }
+                    JSONArray parts = spec.optJSONArray("parts");
+                    byte[] body;
+                    String ctype;
+                    if (parts != null && parts.length() > 0) {
+                        String boundary = "----NAISupporter" + System.nanoTime();
+                        body = multipart(boundary, bodyStr, parts);
+                        ctype = "multipart/form-data; boundary=" + boundary;
+                    } else {
+                        body = bodyStr.getBytes("UTF-8");
+                        ctype = "application/json";
+                    }
+                    HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
                     c.setRequestMethod("POST");
                     c.setDoOutput(true);
                     c.setConnectTimeout(30000);
-                    c.setReadTimeout(150000);
+                    c.setReadTimeout(180000);
                     c.setFixedLengthStreamingMode(body.length);
-                    c.setRequestProperty("Content-Type", "application/json");
+                    c.setRequestProperty("Content-Type", ctype);
                     c.setRequestProperty("Authorization", "Bearer " + apiKey);
                     c.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
                     c.setRequestProperty("Referer", "https://novelai.net/");
@@ -613,14 +681,19 @@ public class GenerationService extends Service {
                     if (in != null) in.close();
                     c.disconnect();
                     if (code == 200) {
-                        byte[] png = extractPng(data);
-                        if (png == null) { res.put("status", "fail"); res.put("error", "응답에서 PNG를 찾지 못했습니다."); return res; }
-                        writeBytes(imgFile(this, key), png);
+                        List<byte[]> imgs = extractImages(data);
+                        if (imgs.isEmpty()) { res.put("status", "fail"); res.put("error", "응답에서 그림을 찾지 못했습니다."); return res; }
+                        writeBytes(imgFile(this, key), imgs.get(0));
+                        for (int k = 1; k < imgs.size(); k++) writeBytes(imgFile(this, key + "_" + k), imgs.get(k));
                         res.put("status", "done");
+                        res.put("count", imgs.size());
                         return res;
                     }
-                    String text = new String(data, 0, Math.min(data.length, 200), "UTF-8");
+                    String text = new String(data, 0, Math.min(data.length, 300), "UTF-8");
                     lastErr = reason(code) + (text.isEmpty() ? "" : " (" + text + ")");
+                    // 다른 방식(멀티파트)으로 한 번 더: 도구 요청 형식이 확인되지 않은 경우
+                    if (code == 400 && alt != null && spec != alt) { spec = alt; attempt--; continue; }
+                    if (tool && (code == 400 || code == 404 || code == 500)) { res.put("status", "fail"); res.put("error", lastErr); return res; }
                     if (code == 400 || code == 401 || code == 402 || code == 403) {
                         res.put("status", "fail"); res.put("error", lastErr); res.put("fatal", true);
                         return res;
@@ -642,6 +715,9 @@ public class GenerationService extends Service {
             res.put("error", lastErr);
         } catch (Exception e) {
             try { res.put("status", "fail"); res.put("error", "생성 중 오류: " + e.getMessage()); } catch (Exception ignored) { }
+        } finally {
+            deleteInputs(job);
+            deleteInputs(alt);
         }
         return res;
     }
