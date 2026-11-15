@@ -133,7 +133,11 @@ function editor({ get, set, placeholder, id }) {
   const ta = h('textarea', { class: 'ed-ta', id, spellcheck: 'false', autocapitalize: 'off', autocomplete: 'off', placeholder, value: get() });
   const sug = h('div', { class: 'ed-sug', hidden: true });
   let timer;
-  const refresh = () => paint(pre, ta.value);
+  // 입력칸이 직접 스크롤된다(길면 칸 안에서 스크롤). 글자를 끌어 선택할 때 폰이 칸 안을 알아서 내려 준다.
+  // 뒤의 색칠한 글자는 입력칸 스크롤 위치를 따라간다.
+  const fit = () => { ta.style.height = 'auto'; ta.style.height = `${ta.scrollHeight + 2}px`; pre.scrollTop = ta.scrollTop; };
+  const refresh = () => { paint(pre, ta.value); fit(); };
+  ta.addEventListener('scroll', () => { pre.scrollTop = ta.scrollTop; });
   const suggest = () => {
     clearTimeout(timer);
     if (!SC.autocomplete) { sug.hidden = true; return; }
@@ -171,6 +175,7 @@ function editor({ get, set, placeholder, id }) {
   ta.addEventListener('blur', () => setTimeout(() => { sug.hidden = true; }, 150));
   refresh();
   const wrap = h('div', { class: 'ed' }, h('div', { class: 'ed-box' }, pre, ta), sug);
+  requestAnimationFrame(fit);
   wrap.refresh = () => { ta.value = get(); refresh(); };
   return wrap;
 }

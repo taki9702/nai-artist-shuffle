@@ -89,6 +89,8 @@ for (const p of perms) if (!manifest.includes(p.split('"')[1])) manifest = manif
 // the service that keeps the app running (with its notification) while images are made in the background
 if (!manifest.includes('GenerationService')) manifest = manifest.replace('</application>',
   '    <service android:name=".GenerationService" android:exported="false" android:foregroundServiceType="dataSync" />\n    </application>');
+// 키보드가 뜨면 화면을 줄인다 (Android 14 이하)
+if (!manifest.includes('windowSoftInputMode')) manifest = manifest.replace('android:name=".MainActivity"', 'android:name=".MainActivity"\n            android:windowSoftInputMode="adjustResize"');
 if (!manifest.includes('requestLegacyExternalStorage')) manifest = manifest.replace('<application', '<application\n        android:requestLegacyExternalStorage="true"');
 write(manifestFile, manifest);
 // 앱 전용 플러그인(화면 켜 두기, 배터리, 알림)과 그림 생성 서비스(화면과 따로 돌아간다)
@@ -668,7 +670,11 @@ write(path.join(javaDir, 'MainActivity.java'), `package ${pkg};
 
 import android.os.Build;
 import android.os.Bundle;
+import android.view.ViewGroup;
 import android.webkit.WebView;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
@@ -681,6 +687,23 @@ public class MainActivity extends BridgeActivity {
             if (Build.VERSION.SDK_INT >= 26 && getBridge() != null && getBridge().getWebView() != null) {
                 getBridge().getWebView().setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
             }
+        } catch (Exception ignored) { }
+        // 키보드가 화면을 덮지 않게: Capacitor의 가장자리 여백(상태바·내비바)에 키보드 높이까지 더해 웹뷰를 줄인다.
+        // (Android 15부터 화면이 가장자리까지 그려져서 키보드가 올라와도 웹뷰가 저절로 줄지 않는다)
+        try {
+            final WebView wv = getBridge().getWebView();
+            ViewCompat.setOnApplyWindowInsetsListener(wv, (v, wi) -> {
+                Insets bars = wi.getInsets(WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout());
+                Insets ime = wi.getInsets(WindowInsetsCompat.Type.ime());
+                ViewGroup.MarginLayoutParams mlp = (ViewGroup.MarginLayoutParams) v.getLayoutParams();
+                mlp.leftMargin = bars.left;
+                mlp.rightMargin = bars.right;
+                mlp.topMargin = bars.top;
+                mlp.bottomMargin = Math.max(bars.bottom, ime.bottom);
+                v.setLayoutParams(mlp);
+                return WindowInsetsCompat.CONSUMED;
+            });
+            ViewCompat.requestApplyInsets(wv);
         } catch (Exception ignored) { }
     }
 }
