@@ -15,7 +15,7 @@ const DEF = {
   prompt: '', negative: '', chars: [], posMode: 'ai',
   model: 'nai-diffusion-5-full', effort: 'high', size: 'normal-portrait', width: 832, height: 1216,
   steps: 28, scale: 5, rescale: 0, sampler: 'k_euler_ancestral', noise: 'karras', seed: '',
-  quality: 'none', ucPreset: 'none', count: 1, tab: 'prompt', grid: 1, hgrid: 3, stab: 'gen', open: true, autocomplete: false,
+  quality: 'none', ucPreset: 'none', count: 1, tab: 'prompt', grid: 1, hgrid: 3, stab: 'gen', open: true, autocomplete: false, fontSize: 17,
 };
 const SC = { ...DEF };
 let G = [];  // 생성 기록 (최신이 앞)
@@ -25,7 +25,7 @@ const urls = new Map();
 const LQ = { items: [], busy: false };  // 브라우저 미리보기용 대기열 (폰에서는 생성 서비스가 맡는다)
 
 export const isSceneKey = (k) => /^s\d+_\d+$/.test(String(k));
-const UI_KEYS = ['tab', 'grid', 'hgrid', 'stab', 'open', 'count', 'autocomplete'];
+const UI_KEYS = ['tab', 'grid', 'hgrid', 'stab', 'open', 'count', 'autocomplete', 'fontSize'];
 const snapshot = () => { const o = JSON.parse(JSON.stringify(SC)); for (const k of UI_KEYS) delete o[k]; return o; };
 
 let saveTimer;
@@ -582,7 +582,7 @@ function stepViewer(d) {
 const shortModel = (m) => (SCENE_MODELS.find(([k]) => k === m)?.[1] || m).replace('NAI Diffusion ', '');
 
 function applyParams(p, withSeed, seed) {
-  const keep = { tab: SC.tab, grid: SC.grid, hgrid: SC.hgrid, stab: SC.stab, open: SC.open, count: SC.count, autocomplete: SC.autocomplete };
+  const keep = { tab: SC.tab, grid: SC.grid, hgrid: SC.hgrid, stab: SC.stab, open: SC.open, count: SC.count, autocomplete: SC.autocomplete, fontSize: SC.fontSize };
   Object.assign(SC, DEF, JSON.parse(JSON.stringify(p)), keep);
   SC.seed = withSeed ? String(seed) : '';
   save();
@@ -722,6 +722,7 @@ export function renderSheet(rebuild = false) {
     updateFill();
   }, 60));
   el.classList.toggle('fs', !!UI.fs);
+  applyFont();
   el.classList.remove('editing');
   el.append(handle, body, h('div', { class: 'sc-gobar' }));
   renderGoBar();
@@ -743,6 +744,22 @@ function edTabs(cur, onPick, extra) {
 }
 const ICON_EXPAND = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg>';
 const ICON_SHRINK = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4v5H4M20 9h-5V4M15 20v-5h5M4 15h5v5"/></svg>';
+// 프롬프트 글자 크기 (12~24px): 시트에 변수로 걸어 큰 칸·캐릭터 칸에 같이 적용
+const FONT_MIN = 12, FONT_MAX = 24;
+const fontPx = () => Math.max(FONT_MIN, Math.min(FONT_MAX, Math.round(Number(SC.fontSize) || 17)));
+function applyFont() { document.getElementById('scene-sheet')?.style.setProperty('--ed-font', `${fontPx()}px`); }
+function stepFont(d) {
+  SC.fontSize = Math.max(FONT_MIN, Math.min(FONT_MAX, fontPx() + d));
+  save();
+  applyFont();
+  document.querySelectorAll('.ed-size').forEach((x) => { x.textContent = String(SC.fontSize); });
+  document.querySelectorAll('.ed-font-b').forEach((b) => { b.disabled = b.dataset.d < 0 ? SC.fontSize <= FONT_MIN : SC.fontSize >= FONT_MAX; });
+  editors.forEach((e) => e.refresh?.());
+}
+function fontBtns() {
+  const b = (d, label, aria) => h('button', { type: 'button', class: 'ed-icon ed-font-b', 'data-d': d, 'aria-label': aria, disabled: d < 0 ? fontPx() <= FONT_MIN : fontPx() >= FONT_MAX, onmousedown: (e) => e.preventDefault(), onclick: () => stepFont(d) }, label);
+  return h('div', { class: 'ed-font' }, b(-1, '가−', '글자 작게'), h('span', { class: 'ed-size' }, String(fontPx())), b(1, '가+', '글자 크게'));
+}
 function setFs(on) {
   UI.fs = on;
   if (on && UI.snap < 2) UI.snap = 2;
@@ -755,7 +772,7 @@ function promptBlock() {
   fsBtn.innerHTML = UI.fs ? ICON_SHRINK : ICON_EXPAND;
   const ed = editor({ id: 'sc-prompt', fill: true, get: () => (isUc ? SC.negative : SC.prompt), set: (v) => { if (isUc) SC.negative = v; else { SC.prompt = v; const p = document.querySelector('.sc-peek-text'); if (p) p.textContent = v.replace(/\s+/g, ' ').slice(0, 120); } save(); },
     placeholder: isUc ? '제외할 내용(Undesired Content)' : '프롬프트를 입력하세요',
-    head: edTabs(SC.tab, (v) => { SC.tab = v; save(); renderSheet(true); }, fsBtn) });
+    head: edTabs(SC.tab, (v) => { SC.tab = v; save(); renderSheet(true); }, [fontBtns(), fsBtn]) });
   editors.push(ed);
   const ucNote = isUc && sceneEffective(SC).ucPreset !== 'none' ? h('p', { class: 'muted small' }, `UC 프리셋(${UC_PRESETS.find(([k]) => k === SC.ucPreset)?.[1]}) 문구가 앞에 붙어요.`) : null;
   return h('section', { class: 'sc-sec sc-main' }, ed, ucNote);

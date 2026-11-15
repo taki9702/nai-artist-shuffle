@@ -486,7 +486,16 @@ body.scene-mode .toast { bottom: auto; top: calc(72px + env(safe-area-inset-top,
 .ed-tab.on { color: var(--fg); background: var(--nai-tab, var(--panel2)); }
 .ed-icon { flex: 0 0 auto; width: 42px; height: 40px; border: 0; background: transparent; color: var(--fg); display: flex; align-items: center; justify-content: center; border-radius: 6px; }
 .ed-icon:active { background: var(--panel2); }
-.ed-hl, .ed-ta { margin: 0; padding: 10px 14px 12px; font: 17px/1.7 var(--sans, system-ui, sans-serif); letter-spacing: 0; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; tab-size: 4; }
+/* 글자 크기 가−/가+ */
+.ed-font { display: flex; align-items: center; }
+.ed-font .ed-icon { width: 36px; font-size: 14px; font-weight: 800; }
+.ed-font .ed-icon:disabled { opacity: .3; }
+.ed-size { min-width: 22px; text-align: center; font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* 큰 프롬프트 칸: 화면 끝까지 꽉 (양옆 테두리 없음). 시트 안쪽 여백(14px)만큼 밖으로 뺀다 */
+.sc-main .ed-box { margin: 0 -14px; border-left: 0; border-right: 0; border-radius: 0; }
+.sc-main .ed-hl, .sc-main .ed-ta { padding-left: 12px; padding-right: 12px; }
+.sc-main .ed-ta { border-radius: 0; }
+.ed-hl, .ed-ta { margin: 0; padding: 10px 14px 12px; font: var(--ed-font, 17px)/1.7 var(--sans, system-ui, sans-serif); letter-spacing: 0; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; tab-size: 4; }
 .ed-hl { position: absolute; inset: 0; overflow: hidden; color: var(--fg); pointer-events: none; }
 .ed-ta { position: relative; z-index: 1; display: block; width: 100%; min-height: 104px; max-height: 46vh; resize: none; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; background: transparent !important; border: 0; border-radius: 10px; color: transparent; caret-color: var(--accent); -webkit-text-fill-color: transparent; }
 .ed-ta::-webkit-scrollbar { display: none; }
