@@ -128,3 +128,99 @@ async function mockPng(params, seed) {
   const blob = await new Promise((r) => c.toBlob(r, 'image/png'));
   return new Uint8Array(await blob.arrayBuffer());
 }
+
+// ================================================================ 상황 뽑기 (NAI 화면과 같은 설정으로 한 장씩)
+// novelai.net V5 화면의 선택지. 품질 태그·UC 프리셋 문구는 서버가 붙여 주지 않아서 앱이 직접 붙인다.
+export const SCENE_MODELS = [
+  ['nai-diffusion-5-full', 'NAI Diffusion V5 Full'],
+  ['nai-diffusion-5-curated', 'NAI Diffusion V5 Curated'],
+  ['nai-diffusion-4-5-full', 'NAI Diffusion V4.5 Full'],
+  ['nai-diffusion-4-5-curated', 'NAI Diffusion V4.5 Curated'],
+  ['nai-diffusion-4-full', 'NAI Diffusion V4 Full'],
+];
+export const SCENE_SIZES = [
+  ['normal-portrait', '노말 세로', 832, 1216], ['normal-landscape', '노말 가로', 1216, 832], ['normal-square', '노말 정사각', 1024, 1024],
+  ['small-portrait', '작게 세로', 512, 768], ['small-landscape', '작게 가로', 768, 512], ['small-square', '작게 정사각', 640, 640],
+  ['large-portrait', '크게 세로', 1024, 1536], ['large-landscape', '크게 가로', 1536, 1024], ['large-square', '크게 정사각', 1472, 1472],
+  ['wall-portrait', '배경화면 세로', 1088, 1920], ['wall-landscape', '배경화면 가로', 1920, 1088],
+  ['pixiv-header', '픽시브 헤더', 1408, 704],
+];
+export const SCENE_SAMPLERS = [
+  ['k_euler_ancestral', 'Euler Ancestral'], ['k_dpmpp_2m', 'DPM++ 2M'], ['k_euler', 'Euler'], ['k_dpmpp_2s_ancestral', 'DPM++ 2S Ancestral'],
+  ['k_dpmpp_sde', 'DPM++ SDE'], ['k_dpm_2', 'DPM2'], ['k_dpm_fast', 'DPM Fast'], ['ddim_v3', 'DDIM'],
+];
+export const NOISE_SCHEDULES = [['karras', 'karras'], ['exponential', 'exponential'], ['polyexponential', 'polyexponential']];
+export const QUALITY_PRESETS = [['none', '끄기'], ['standard', 'Standard'], ['light', 'Light']];
+export const UC_PRESETS = [['none', '없음'], ['heavy', 'Heavy'], ['light', 'Light'], ['human', 'Human Focus']];
+const QUALITY_TEXT = { standard: ', very aesthetic, masterpiece, no text', light: ', very aesthetic, amazing quality, no text' };
+const UC_HEAVY = 'lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page';
+const UC_TEXT = {
+  heavy: UC_HEAVY,
+  light: 'lowres, bad hands, bad anatomy, artistic error, sepia, white haze, worst quality, very displeasing, jpeg artifacts, 0::ai-generated::',
+  human: `${UC_HEAVY}, @_@, mismatched pupils, glowing eyes, bad anatomy`,
+};
+const HINT = { none: 0, standard: 1, heavy: 2, light: 3, human: 4 };
+
+export const isV5Full = (model) => model === 'nai-diffusion-5-full';
+export const sceneSize = (s) => {
+  if (s.size === 'custom') return [Number(s.width) || 832, Number(s.height) || 1216];
+  const p = SCENE_SIZES.find(([k]) => k === s.size);
+  return p ? [p[2], p[3]] : [832, 1216];
+};
+// Medium Effort(V5 Full 전용)는 NAI 화면처럼 14스텝·Euler Ancestral 고정, UC 프리셋·리스케일 없음.
+export function sceneEffective(s) {
+  const medium = isV5Full(s.model) && s.effort === 'medium';
+  const [width, height] = sceneSize(s);
+  return {
+    medium, width, height,
+    model: medium ? 'nai-diffusion-5-full-medium' : s.model,
+    steps: medium ? 14 : Math.max(1, Math.min(50, Math.round(Number(s.steps) || 23))),
+    sampler: medium ? 'k_euler_ancestral' : s.sampler,
+    scale: Number(s.scale) || 5,
+    rescale: medium ? 0 : Number(s.rescale) || 0,
+    quality: isV5Full(s.model) ? s.quality : 'none',
+    ucPreset: isV5Full(s.model) && !medium ? s.ucPreset : 'none',
+  };
+}
+
+// s: 상황 뽑기 설정(프롬프트·UC·캐릭터·설정). 캐릭터는 켜진 것만 보낸다.
+export function buildScenePayload(s, seed) {
+  const e = sceneEffective(s);
+  const base = String(s.prompt || '').trim();
+  if (!base) throw new Error('프롬프트가 비어 있어요.');
+  const input = base + (QUALITY_TEXT[e.quality] || '');
+  const userUc = String(s.negative || '').trim();
+  const negative = [UC_TEXT[e.ucPreset], userUc].filter(Boolean).join(', ');
+  const custom = s.posMode === 'custom';
+  const chars = (s.chars || []).filter((c) => c.enabled !== false && String(c.prompt || '').trim())
+    .map((c) => ({ prompt: String(c.prompt).trim(), uc: String(c.uc || '').trim(), center: custom && c.pos ? { x: c.pos.x, y: c.pos.y } : { x: 0.5, y: 0.5 } }));
+  const useCoords = custom && chars.length > 0;
+  const parameters = {
+    params_version: 4, width: e.width, height: e.height, scale: e.scale, sampler: e.sampler, steps: e.steps, seed, n_samples: 1, cfg_rescale: e.rescale,
+    ...WEB_PARAMS,
+    noise_schedule: s.noise || 'karras',
+    ucPresetId: e.ucPreset, qualityPresetId: e.quality, tag_hint_qt: HINT[e.quality] || 0, tag_hint_uc_preset: HINT[e.ucPreset] || 0,
+    use_coords: useCoords,
+    v4_prompt: { caption: { base_caption: input, char_captions: chars.map((c) => ({ char_caption: c.prompt, centers: [c.center] })) }, use_coords: useCoords, use_order: true },
+    v4_negative_prompt: { caption: { base_caption: negative, char_captions: chars.map((c) => ({ char_caption: c.uc, centers: [c.center] })) }, use_coords: useCoords, use_order: true },
+    negative_prompt: negative,
+    characterPrompts: chars.map((c) => ({ prompt: c.prompt, uc: c.uc, center: c.center, enabled: true })),
+  };
+  return { input, model: e.model, action: 'generate', parameters };
+}
+
+// 다 만든 요청 본문을 그대로 보낸다 (브라우저 미리보기·생성 서비스가 없을 때).
+export async function generatePayload(payload, apiKey) {
+  if (globalThis.__mock) {
+    const p = payload.parameters;
+    return mockPng({ width: p.width, height: p.height }, p.seed);
+  }
+  let res;
+  try {
+    res = await http({ url: NAI_GEN_URL, method: 'POST', headers: naiHeaders(apiKey), json: payload, responseType: 'bytes', timeout: 120000 });
+  } catch (error) {
+    throw new Error(`NovelAI에 연결하지 못했습니다: ${error?.message || error}`);
+  }
+  if (res.status !== 200) throw new NaiHttpError(res.status, `${STATUS_TEXT[res.status] || `HTTP ${res.status}`} (${bodyText(res.data).slice(0, 160)})`);
+  return pngFromResponse(res.data);
+}

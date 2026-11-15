@@ -1,9 +1,12 @@
-// NAI 작가 셔플: 프롬프트 속 작가 가중치를 섞어 조합을 만들고, 조합마다 그림을 뽑아 탭으로 비교한다.
+// NAI 서포터: ≡ 메뉴로 모드를 고른다.
+//   작가 셔플 — 프롬프트 속 작가 가중치를 섞어 조합을 만들고, 조합마다 그림을 뽑아 탭으로 비교한다.
+//   상황 뽑기 — novelai.net 화면처럼 생성하고, 생성 중에도 여러 장을 예약한다(scene.js).
 import { VERSION, REPO } from './version.js';
 import { DEFAULT_SETTINGS, DEFAULT_FAVS } from './defaults.js';
 import { parse, artists, build, artistLine, shuffleWeights, topArtists, fmt, reorder, orderByNames, shuffledOrder } from './shuffle.js';
 import { MODELS, SAMPLERS, SIZES, RETRY_STATUSES, RETRY_DELAYS, AUTH_STATUSES, generateImage, fetchSubscription, randomSeed, buildPayload, isFreeForOpus, IMAGES_PER_PERCENT } from './nai.js';
 import * as store from './store.js';
+import { initScene, loadScene, viewScene, renderSheet as renderSceneSheet, takeResult, syncStatus, sceneBack, isSceneKey, renderGoBar } from './scene.js';
 import {
   native, Filesystem, toBase64, http, copyToClipboard, openExternal, downloadBlob, onBackButton, minimizeApp,
   styleStatusBar, keepAwake, backgroundWork, backgroundNotice, askNotifications, batteryState, shareFile, Gen, fromBase64,
@@ -190,6 +193,7 @@ async function syncNative() {
     const acks = [];
     let fatal = '';
     for (const r of results) {
+      if (isSceneKey(r.key)) { if (await takeResult(r)) acks.push(r.key); continue; }
       acks.push(r.key);
       const k = parseKey(r.key);
       const run = k && runById(k.runId);
@@ -231,6 +235,7 @@ async function syncNative() {
     }
     for (const run of touched) await store.runPut(run).catch(() => {});
     if (acks.length) await Gen.genAck({ keys: acks }).catch(() => {});
+    syncStatus({ current: st.current, queueKeys: Array.isArray(st.queueKeys) ? st.queueKeys : [], busy, pending });
     Q.busy = busy;
     Q.done = Number(st.done) || 0;
     Q.total = Number(st.total) || 0;
@@ -735,6 +740,29 @@ async function publicFile(name, folder) {
     } catch { /* next */ }
   }
   return null;
+}
+
+// 아무 파일이나 폰의 공용 폴더에 저장 (못 쓰면 공유 창으로)
+async function saveBlobAs(name, blob, folder = 'Pictures/NAISupporter') {
+  if (!native) { downloadBlob(name, blob); toast('다운로드했어요', 'ok'); return; }
+  try {
+    const target = await publicFile(name, folder);
+    if (!target) { await shareBlobAs(name, blob); return; }
+    await Filesystem.writeFile({ path: target.path, directory: target.directory, data: toBase64(new Uint8Array(await blob.arrayBuffer())), recursive: true });
+    toast(`저장했어요: ${target.label}`, 'ok');
+  } catch (e) {
+    toast(`저장하지 못했어요: ${e?.message || e}`, 'bad');
+  }
+}
+async function shareBlobAs(name, blob) {
+  if (!native) { downloadBlob(name, blob); return; }
+  try {
+    const path = `share/${name}`;
+    await Filesystem.writeFile({ path, directory: 'CACHE', data: toBase64(new Uint8Array(await blob.arrayBuffer())), recursive: true });
+    await shareFile({ path, directory: 'CACHE', title: name });
+  } catch (e) {
+    if (!/cancel/i.test(String(e?.message))) toast(`공유하지 못했어요: ${e?.message || e}`, 'bad');
+  }
 }
 
 async function saveImage(no, im, created = Date.now()) {
@@ -1368,10 +1396,10 @@ function viewSettings() {
       h('button', { class: 'btn small', onclick: async () => { const s = await batteryState(true); toast(s == null ? '폰 앱에서만 쓸 수 있어요' : s.unrestricted ? '이미 꺼져 있어요' : '설정 화면에서 허용해 주세요'); } }, '배터리 최적화 끄기')),
     h('section', { class: 'card' },
       h('h2', {}, '앱 정보'),
-      h('p', { class: 'muted small' }, `NAI 작가 셔플 v${VERSION}`),
+      h('p', { class: 'muted small' }, `NAI 서포터 v${VERSION}`),
       h('div', { class: 'row gap6' },
         h('button', { class: 'btn small', onclick: () => checkUpdate(upd) }, '업데이트 확인'),
-        h('button', { class: 'btn small', onclick: () => openExternal(`https://github.com/${REPO}/releases/latest/download/NAI-Artist-Shuffle.apk`) }, '최신 APK 받기')),
+        h('button', { class: 'btn small', onclick: () => openExternal(`https://github.com/${REPO}/releases/latest/download/NAI-Supporter.apk`) }, '최신 APK 받기')),
       upd,
       h('p', { class: 'muted small', id: 'usage-box' })));
 }
@@ -1395,6 +1423,7 @@ async function refreshSub(quiet = true) {
     subBusy = false;
     renderUsage();
     renderStatus();
+    renderGoBar();
   }
 }
 
@@ -1923,35 +1952,10 @@ function tasteGroups(names, fallback) {
   return [...groups, ...auto];
 }
 
-// ---------------------------------------------------------------- 두 번째 모드: 상황 뽑기 (틀만)
-const SCENE_VIEWS = [['scene-list', '상황'], ['scene-make', '뽑기'], ['scene-result', '결과']];
-function viewScene() {
-  const soon = h('span', { class: 'soon' }, '준비 중');
-  const pages = {
-    'scene-list': [
-      h('section', { class: 'card scene-hero' },
-        h('div', { class: 'row between' }, h('h2', {}, '상황 프롬프트 모음'), soon),
-        h('p', { class: 'muted' }, '자주 쓰는 상황(장면·구도·의상·표정) 프롬프트를 모아 두는 곳이에요. 상황마다 이름·태그·메모를 붙여 저장해요.')),
-      h('section', { class: 'card' }, h('h2', {}, '저장한 상황'), h('p', { class: 'empty' }, '아직 상황이 없어요.'), h('button', { class: 'btn', disabled: true }, '+ 상황 추가'))],
-    'scene-make': [
-      h('section', { class: 'card scene-hero' },
-        h('div', { class: 'row between' }, h('h2', {}, '여러 상황 한 번에 뽑기'), soon),
-        h('p', { class: 'muted' }, '작가 셔플에서 만든 그림체(즐겨찾기·폴더)를 하나 고르고, 상황 여러 개를 골라 한꺼번에 뽑아요.')),
-      h('section', { class: 'card' }, h('h2', {}, '1. 그림체 고르기'), h('p', { class: 'empty' }, '그림체 탭의 즐겨찾기·폴더에서 가져올 예정이에요.')),
-      h('section', { class: 'card' }, h('h2', {}, '2. 상황 고르기'), h('p', { class: 'empty' }, '상황 탭에서 저장한 상황을 여러 개 고를 예정이에요.')),
-      h('button', { class: 'btn primary wide', disabled: true }, '뽑기 (준비 중)')],
-    'scene-result': [
-      h('section', { class: 'card scene-hero' },
-        h('div', { class: 'row between' }, h('h2', {}, '상황별 결과'), soon),
-        h('p', { class: 'muted' }, '상황마다 탭으로 나뉘어 결과가 쌓일 예정이에요.'))],
-  };
-  return h('div', { class: 'view' }, pages[S.sceneView] || pages['scene-list']);
-}
-
 // ---------------------------------------------------------------- ≡ 메뉴
 const APPS = [
   { id: 'shuffle', title: '작가 셔플', desc: '그림체 탐색 · 뽑기 · 결과 · 기록 · 즐겨찾기 · 그림체', icon: '🎨' },
-  { id: 'scene', title: '상황 뽑기', desc: '상황 프롬프트 모음 · 그림체로 여러 상황 뽑기', icon: '🎬', soon: true },
+  { id: 'scene', title: '상황 뽑기', desc: 'NAI 화면처럼 생성 · 여러 장 예약 · 상황 노트', icon: '🎬' },
 ];
 const D = { open: false };
 function openDrawer() { D.open = true; renderDrawer(); }
@@ -1972,7 +1976,7 @@ function renderDrawer() {
   root.append(
     h('div', { class: 'drawer-back', onclick: closeDrawer }),
     h('nav', { class: 'drawer-panel', 'aria-label': '기능 메뉴' },
-      h('div', { class: 'drawer-head' }, h('img', { src: 'icon-192.png', alt: '', width: 34, height: 34 }), h('b', {}, 'NAI 작가 셔플')),
+      h('div', { class: 'drawer-head' }, h('img', { src: 'icon-192.png', alt: '', width: 34, height: 34 }), h('b', {}, 'NAI 서포터')),
       APPS.map((a) => h('button', { class: `drawer-item${S.app === a.id ? ' on' : ''}`, onclick: () => switchApp(a.id) },
         h('span', { class: 'drawer-icon' }, a.icon),
         h('span', { class: 'drawer-text' }, h('b', {}, a.title, a.soon ? h('span', { class: 'soon' }, '준비 중') : null), h('span', { class: 'muted small' }, a.desc)))),
@@ -2074,11 +2078,8 @@ function renderView() {
 function renderNav() {
   const nav = document.getElementById('nav');
   nav.innerHTML = '';
-  if (S.app === 'scene') {
-    nav.style.gridTemplateColumns = `repeat(${SCENE_VIEWS.length}, 1fr)`;
-    for (const [id, label] of SCENE_VIEWS) nav.append(h('button', { class: `nav-b${S.sceneView === id ? ' on' : ''}`, onclick: () => { S.sceneView = id; renderAll(); window.scrollTo(0, 0); } }, label));
-    return;
-  }
+  nav.hidden = S.app === 'scene';
+  if (S.app === 'scene') return;
   nav.style.gridTemplateColumns = `repeat(${VIEWS.length}, 1fr)`;
   for (const [id, label] of VIEWS) {
     nav.append(h('button', { class: `nav-b${S.view === id ? ' on' : ''}`, 'aria-current': S.view === id ? 'page' : null,
@@ -2092,14 +2093,17 @@ function renderAll() {
   renderNav();
   renderView();
   renderStatus();
+  renderSceneSheet();
 }
 
 onBackButton(() => {
   if (CM.open) { closeCopyMenu(); return; }
+  if (S.app === 'scene' && sceneBack()) return;
   if (V.open) { closeViewer(); return; }
   if (D.open) { closeDrawer(); return; }
   if (S.view === 'fav' && S.favTab === 'cup' && activeCup() && !S.cupOut) { S.cupOut = true; renderView(); return; }
   if (SH.open) { closeSheet(); return; }
+  if (sceneBack()) return;
   if (S.app === 'scene') { switchApp('shuffle'); return; }
   if (S.view === 'result' && S.detail) { backToGallery(); return; }
   if (S.view !== 'make') { S.view = 'make'; renderAll(); return; }
@@ -2116,8 +2120,23 @@ document.addEventListener('keydown', (e) => {
   styleStatusBar();
   // 테스트용: 브라우저 미리보기에서 ?mock 이면 가짜 그림·가짜 구독 정보를 쓴다.
   if (!native && /[?&]mock\b/.test(location.search)) window.__mock = true;
+  initScene({
+    h, toast, confirmBtn, native, Gen, Filesystem, fromBase64, toBase64, stamp, when, askNotifications,
+    app: () => S.app, apiKey: () => S.settings.apiKey, sub: () => S.sub, refreshSub: () => refreshSub(),
+    copy: (t, w) => copy(t, w), saveBlob: (n, b) => saveBlobAs(n, b), shareBlob: (n, b) => shareBlobAs(n, b),
+    saveFile: (n, b) => saveBlobAs(n, b, 'Download/NAISupporter'),
+    renderView: () => renderView(), sync: () => syncNative(), pending: (d) => { pending += d; },
+    // 상황 뽑기를 처음 열 때: 작가 셔플에 넣어 둔 프롬프트·설정에서 시작
+    defaults: () => {
+      const st = S.settings;
+      const size = { '세로 832×1216': 'normal-portrait', '정방형 1024×1024': 'normal-square', '가로 1216×832': 'normal-landscape' }[st.size] || 'normal-portrait';
+      return { prompt: [st.prompt, st.charPrompt].filter((x) => String(x || '').trim()).join(',\n'), negative: [st.negative, st.charNegative].filter((x) => String(x || '').trim()).join(', '),
+        model: st.model, size, steps: st.steps, scale: st.cfg, rescale: st.rescale, sampler: st.sampler };
+    },
+  });
   try {
     await load();
+    await loadScene();
   } catch (e) {
     toast(`저장된 데이터를 읽지 못했어요: ${e?.message || e}`, 'bad');
   }

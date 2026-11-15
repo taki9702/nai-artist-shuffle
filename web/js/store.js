@@ -1,14 +1,15 @@
-// 폰 안에 저장: 설정·즐겨찾기(kv), 뽑기 기록(runs), 그림 PNG(images). 모두 IndexedDB.
+// 폰 안에 저장: 설정·즐겨찾기(kv), 뽑기 기록(runs), 그림 PNG(images), 상황 뽑기 기록(gens). 모두 IndexedDB.
+// v2(상황 뽑기)에서 gens 저장소만 새로 생겼다. 예전 저장소는 그대로 둔다.
 const DB_NAME = 'nai-artist-shuffle';
 
 let dbp = null;
 function db() {
   if (!dbp) {
     dbp = new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, 1);
+      const req = indexedDB.open(DB_NAME, 2);
       req.onupgradeneeded = () => {
         const d = req.result;
-        for (const s of ['kv', 'runs', 'images']) if (!d.objectStoreNames.contains(s)) d.createObjectStore(s);
+        for (const s of ['kv', 'runs', 'images', 'gens']) if (!d.objectStoreNames.contains(s)) d.createObjectStore(s);
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
@@ -44,6 +45,13 @@ export async function runList() {
 export const imagePut = (id, blob) => tx('images', 'readwrite', (s) => s.put(blob, id));
 export const imageGet = (id) => tx('images', 'readonly', (s) => s.get(id));
 export const imageDelete = (id) => tx('images', 'readwrite', (s) => s.delete(id));
+
+export const genPut = (g) => tx('gens', 'readwrite', (s) => s.put(g, g.id));
+export const genDelete = (id) => tx('gens', 'readwrite', (s) => s.delete(id));
+export async function genList() {
+  const all = await tx('gens', 'readonly', (s) => s.getAll());
+  return (all || []).sort((a, b) => b.created - a.created || (b.no || 0) - (a.no || 0));
+}
 
 export async function usage() {
   try {

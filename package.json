@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "NAI 작가 셔플: 작가 태그 가중치를 무작위로 섞어 조합마다 그림을 뽑아 비교하는 안드로이드 앱",
+  "description": "NAI 서포터: 작가 셔플(그림체 탐색)과 상황 뽑기(NAI 화면처럼 생성·예약·상황 노트)를 담은 안드로이드 앱",
   "scripts": {
     "build": "node scripts/build.mjs",
     "android:prepare": "node scripts/build.mjs && npx cap add android && node scripts/patch-android.mjs && npx cap sync android"

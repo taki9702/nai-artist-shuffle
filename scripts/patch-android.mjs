@@ -143,7 +143,7 @@ public class ScreenAwakePlugin extends Plugin {
         try {
             Context ctx = getContext();
             NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
-            nm.notify(GenerationService.DONE_ID, GenerationService.note(ctx, call.getString("title", "NAI 작가 셔플"), call.getString("text", ""), false));
+            nm.notify(GenerationService.DONE_ID, GenerationService.note(ctx, call.getString("title", "NAI 서포터"), call.getString("text", ""), false));
             call.resolve();
         } catch (Exception e) {
             call.reject(String.valueOf(e.getMessage()));
@@ -248,6 +248,35 @@ public class ScreenAwakePlugin extends Plugin {
                 GenerationService.writeText(GenerationService.resultsFile(ctx), keep.toString());
             }
             call.resolve();
+        } catch (Exception e) {
+            call.reject(String.valueOf(e.getMessage()));
+        }
+    }
+
+    // 예약 빼기: 아직 시작하지 않은 키만 대기열에서 지운다. 실제로 뺀 키를 돌려준다.
+    @PluginMethod
+    public void genRemove(PluginCall call) {
+        Context ctx = getContext();
+        try {
+            JSArray keys = call.getArray("keys");
+            java.util.HashSet<String> set = new java.util.HashSet<>();
+            if (keys != null) for (int i = 0; i < keys.length(); i++) set.add(keys.getString(i));
+            JSArray removed = new JSArray();
+            synchronized (GenerationService.LOCK) {
+                JSONArray q = GenerationService.readArr(GenerationService.queueFile(ctx));
+                JSONArray keep = new JSONArray();
+                for (int i = 0; i < q.length(); i++) {
+                    JSONObject o = q.getJSONObject(i);
+                    String k = o.optString("key");
+                    if (set.contains(k) && !k.equals(GenerationService.current)) removed.put(k);
+                    else keep.put(o);
+                }
+                GenerationService.writeText(GenerationService.queueFile(ctx), keep.toString());
+                GenerationService.total = Math.max(GenerationService.done, GenerationService.total - removed.length());
+            }
+            JSObject out = new JSObject();
+            out.put("keys", removed);
+            call.resolve(out);
         } catch (Exception e) {
             call.reject(String.valueOf(e.getMessage()));
         }

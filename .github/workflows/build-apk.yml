@@ -1,5 +1,6 @@
 # Builds the Android app on every push to main and publishes it as a GitHub Release (no PC needed).
-# The phone downloads: https://github.com/<owner>/<repo>/releases/latest/download/NAI-Artist-Shuffle.apk
+# The phone downloads: https://github.com/<owner>/<repo>/releases/latest/download/NAI-Supporter.apk
+# (NAI-Artist-Shuffle.apk is the same file under the old name, for the update button of v2.x apps)
 name: Build APK
 
 on:
@@ -66,14 +67,15 @@ jobs:
           "$BT/zipalign" -p -f 4 "$UNSIGNED" aligned.apk
           "$BT/apksigner" sign --ks signing/release.jks --ks-key-alias nailab \
             --ks-pass pass:naistylelab-mobile --key-pass pass:naistylelab-mobile \
-            --out NAI-Artist-Shuffle.apk aligned.apk
-          "$BT/apksigner" verify --print-certs NAI-Artist-Shuffle.apk
-          ls -la NAI-Artist-Shuffle.apk
+            --out NAI-Supporter.apk aligned.apk
+          "$BT/apksigner" verify --print-certs NAI-Supporter.apk
+          cp NAI-Supporter.apk NAI-Artist-Shuffle.apk
+          ls -la NAI-Supporter.apk NAI-Artist-Shuffle.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NAI-Artist-Shuffle-v${{ steps.version.outputs.version }}
-          path: NAI-Artist-Shuffle.apk
+          name: NAI-Supporter-v${{ steps.version.outputs.version }}
+          path: NAI-Supporter.apk
 
       - name: Release
         env:
@@ -84,8 +86,8 @@ jobs:
           NOTES=$(git log -1 --pretty=%B | sed '/^Co-Authored-By/d;/^Claude-Session/d')
           gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
           git push origin ":refs/tags/$TAG" 2>/dev/null || true
-          gh release create "$TAG" NAI-Artist-Shuffle.apk \
-            --title "NAI 작가 셔플 v$VERSION" \
+          gh release create "$TAG" NAI-Supporter.apk NAI-Artist-Shuffle.apk \
+            --title "NAI 서포터 v$VERSION" \
             --notes "$NOTES" \
             --target "$GITHUB_SHA" \
             --latest

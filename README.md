@@ -1,12 +1,16 @@
-# NAI 작가 셔플
+# NAI 서포터 (구 NAI 작가 셔플)
 
-NovelAI 프롬프트 속 `artist:` 태그의 **가중치만** 무작위로 섞어 조합을 만들고, 조합마다 그림을 몇 장씩 뽑아 **조합별 탭**으로 비교하는 안드로이드 앱.
+NovelAI 그림 작업을 돕는 안드로이드 앱. 왼쪽 위 ≡ 메뉴에서 모드를 고른다.
+
+- **작가 셔플**: 프롬프트 속 `artist:` 태그의 **가중치만** 무작위로 섞어 조합을 만들고, 조합마다 그림을 몇 장씩 뽑아 **조합별 탭**으로 비교한다.
+- **상황 뽑기**: novelai.net 이미지 화면(V5 모바일)처럼 생성한다. 생성 중에도 버튼을 누르면 그 순간 설정 그대로 **예약**되고(×N으로 여러 장), 백그라운드 생성 서비스가 받아 둔다. 가중치 색 표시, 단부루 태그 자동완성(한글 검색), PNG 메타데이터 불러오기, 직접 쓰는 **노트**(상황 노트·캐릭터 노트, 썸네일·폴더·[넣기])가 있다.
 
 ## 설치
 폰에서 아래 링크로 APK를 받아 설치한다.
-https://github.com/taki9702/nai-artist-shuffle/releases/latest/download/NAI-Artist-Shuffle.apk
+https://github.com/taki9702/nai-artist-shuffle/releases/latest/download/NAI-Supporter.apk
+(같은 파일이 예전 이름 NAI-Artist-Shuffle.apk로도 올라가서, v2.x 앱의 업데이트 버튼도 그대로 작동한다. 앱 ID·서명 키가 같아 덮어 설치해도 데이터가 유지된다.)
 
-## 기능
+## 작가 셔플 기능
 - 프롬프트 전체를 넣으면 작가 태그만 찾아 가중치를 바꾼다. 다른 태그·순서·줄바꿈은 그대로.
 - 섞는 방식: 완전 무작위 / 즐겨찾기 조합(여러 개면 평균)에서 ±폭만큼 흔들기. 평균·최소·최대를 정한다.
 - 작가 고정(잠금), 조합 수, 조합당 장수, 시드(조합끼리 같은 시드 / 매번 다른 시드 / 직접 지정).
@@ -16,3 +20,5 @@ https://github.com/taki9702/nai-artist-shuffle/releases/latest/download/NAI-Arti
 ## 빌드
 `main`에 push하면 GitHub Actions가 APK를 만들어 릴리스 `v{VERSION}`에 올린다. 버전은 `web/js/version.js`.
 브라우저 미리보기: `web/`을 정적 서버로 열고 `?mock`을 붙이면 가짜 그림으로 시험할 수 있다.
+
+태그 자동완성 사전(`web/data/tags.json`)은 단부루 태그 CSV에서 `python3 scripts/make-tags.py <CSV 폴더> web/data/tags.json`으로 만든다.
