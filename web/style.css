@@ -479,28 +479,29 @@ body.scene-mode .toast { bottom: auto; top: calc(72px + env(safe-area-inset-top,
 .ed-ta::placeholder { color: var(--faint); -webkit-text-fill-color: var(--faint); }
 .ed-ta:focus { outline: none; }
 .ed-ta::selection { background: #9773ff66; }
-.w-syn { color: #a98bff; }
-.w-hi1 { color: #ffe9a6; }
-.w-hi2 { color: #ffbf6b; }
-.w-hi3 { color: #ff7a59; }
-.w-lo1 { color: #a9c8ff; }
-.w-lo2 { color: #7c98e0; }
-.w-neg { color: #ff6b8a; text-decoration: line-through; }
-.ed-sug { position: sticky; bottom: 0; z-index: 3; display: flex; flex-direction: column; border: 1px solid var(--accent2); border-radius: 10px; overflow: hidden; background: var(--panel2); box-shadow: 0 -6px 18px #000a; }
-.sug { display: flex; justify-content: space-between; align-items: center; gap: 10px; text-align: left; background: transparent; border: 0; border-bottom: 1px solid var(--line); padding: 9px 12px; min-height: 48px; }
-.sug:last-child { border-bottom: 0; }
+/* 가중치 형광펜: 배경만 칠한다 (여백을 주면 글자 위치가 어긋나서 커서가 틀어진다) */
+.ed-hl span { border-radius: 3px; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+.w-syn { color: var(--faint); }
+.w-hi1 { background: rgba(245, 214, 90, .18); }
+.w-hi2 { background: rgba(245, 214, 90, .32); }
+.w-hi3 { background: rgba(245, 214, 90, .48); }
+.w-lo1 { background: rgba(120, 160, 255, .18); }
+.w-lo2 { background: rgba(120, 160, 255, .32); }
+.w-lo3 { background: rgba(120, 160, 255, .48); }
+/* 자동완성: 프롬프트를 가리지 않게 한 줄짜리 가로 띠 */
+.ed-sug { position: sticky; bottom: 0; z-index: 3; display: flex; flex-direction: row; gap: 6px; overflow-x: auto; overflow-y: hidden; padding: 6px; border: 1px solid var(--accent2); border-radius: 10px; background: var(--panel2); box-shadow: 0 -4px 12px #0008; scrollbar-width: none; }
+.ed-sug::-webkit-scrollbar { display: none; }
+.sug { flex: 0 0 auto; display: flex; align-items: baseline; gap: 6px; max-width: 78vw; background: var(--input); border: 1px solid var(--line); border-radius: 999px; padding: 6px 12px; min-height: 38px; white-space: nowrap; }
 .sug:active { background: var(--line); }
-.sug-tag { font-family: var(--mono); font-size: 15px; overflow-wrap: anywhere; min-width: 0; color: #9fd0ff; }
+.sug-tag { font-family: var(--mono); font-size: 14px; color: #9fd0ff; overflow: hidden; text-overflow: ellipsis; }
 .sug.k1 .sug-tag { color: #ff9b9b; }
 .sug.k3 .sug-tag { color: #d0a8ff; }
 .sug.k4 .sug-tag { color: #8fe39a; }
 .sug.k5 .sug-tag { color: #ffbf6b; }
 .sug.k6 .sug-tag { color: var(--faint); }
-.sug-alt { color: var(--fg); }
-.sug-meta { display: flex; gap: 8px; align-items: center; flex: 0 1 auto; font-size: 13px; color: var(--muted); text-align: right; }
-.sug-kor { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 9em; }
-.sug-kind { border: 1px solid var(--line); border-radius: 6px; padding: 0 5px; white-space: nowrap; }
-.sug-n { font-variant-numeric: tabular-nums; min-width: 34px; text-align: right; }
+.sug-kor { font-size: 12px; color: var(--muted); }
+.sug-n { font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.ac-row { align-items: center; gap: 12px; padding-top: 4px; }
 
 .sc-char { border: 1px solid var(--line); border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 8px; background: var(--panel2); }
 .sc-char.off { opacity: .55; }

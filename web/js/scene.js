@@ -15,7 +15,7 @@ const DEF = {
   prompt: '', negative: '', chars: [], posMode: 'ai',
   model: 'nai-diffusion-5-full', effort: 'high', size: 'normal-portrait', width: 832, height: 1216,
   steps: 28, scale: 5, rescale: 0, sampler: 'k_euler_ancestral', noise: 'karras', seed: '',
-  quality: 'none', ucPreset: 'none', count: 1, tab: 'prompt', grid: 1, hgrid: 3, stab: 'gen', open: true,
+  quality: 'none', ucPreset: 'none', count: 1, tab: 'prompt', grid: 1, hgrid: 3, stab: 'gen', open: true, autocomplete: false,
 };
 const SC = { ...DEF };
 let G = [];  // 생성 기록 (최신이 앞)
@@ -25,7 +25,7 @@ const urls = new Map();
 const LQ = { items: [], busy: false };  // 브라우저 미리보기용 대기열 (폰에서는 생성 서비스가 맡는다)
 
 export const isSceneKey = (k) => /^s\d+_\d+$/.test(String(k));
-const UI_KEYS = ['tab', 'grid', 'hgrid', 'stab', 'open', 'count'];
+const UI_KEYS = ['tab', 'grid', 'hgrid', 'stab', 'open', 'count', 'autocomplete'];
 const snapshot = () => { const o = JSON.parse(JSON.stringify(SC)); for (const k of UI_KEYS) delete o[k]; return o; };
 
 let saveTimer;
@@ -72,12 +72,13 @@ function weightRuns(text) {
   flush();
   return out;
 }
+// NAI 화면처럼 글자색은 그대로 두고 형광펜(배경)만 칠한다. 올린 곳 / 내린 곳 두 가지, 세기에 따라 진하기만 달라진다.
 function weightClass(w) {
   if (w === 'syn') return 'syn';
-  if (w < 0) return 'neg';
   if (Math.abs(w - 1) < 0.001) return '';
+  if (w < 0) return 'lo3';
   if (w > 1) return w >= 1.4 ? 'hi3' : w >= 1.15 ? 'hi2' : 'hi1';
-  return w <= 0.7 ? 'lo2' : 'lo1';
+  return w <= 0.5 ? 'lo3' : w <= 0.8 ? 'lo2' : 'lo1';
 }
 function paint(pre, text) {
   pre.textContent = '';
@@ -136,6 +137,7 @@ function editor({ get, set, placeholder, id }) {
   const refresh = () => paint(pre, ta.value);
   const suggest = () => {
     clearTimeout(timer);
+    if (!SC.autocomplete) { sug.hidden = true; return; }
     timer = setTimeout(async () => {
       const { core } = tokenAt(ta.value, ta.selectionStart);
       const q = core.trim();
@@ -146,9 +148,10 @@ function editor({ get, set, placeholder, id }) {
       sug.hidden = !list.length;
       for (const t of list) {
         const [tag, kor, count, kind, , alt] = t;
-        sug.append(h('button', { type: 'button', class: `sug k${kind}`, onmousedown: (e) => e.preventDefault(), onclick: () => pick(alt || tag) },
-          h('span', { class: 'sug-tag' }, tag, alt ? h('span', { class: 'sug-alt' }, ` → ${alt}`) : null),
-          h('span', { class: 'sug-meta' }, kor ? h('span', { class: 'sug-kor' }, kor) : null, KIND_LABEL[kind] ? h('span', { class: 'sug-kind' }, KIND_LABEL[kind]) : null, h('span', { class: 'sug-n' }, fmtCount(count)))));
+        sug.append(h('button', { type: 'button', class: `sug k${kind}`, onmousedown: (e) => e.preventDefault(), onclick: () => pick(alt || tag), title: [kor, KIND_LABEL[kind]].filter(Boolean).join(' · ') },
+          h('span', { class: 'sug-tag' }, alt ? `${tag} → ${alt}` : tag),
+          kor ? h('span', { class: 'sug-kor' }, kor) : null,
+          h('span', { class: 'sug-n' }, fmtCount(count))));
       }
     }, 120);
   };
@@ -539,7 +542,7 @@ function stepViewer(d) {
 const shortModel = (m) => (SCENE_MODELS.find(([k]) => k === m)?.[1] || m).replace('NAI Diffusion ', '');
 
 function applyParams(p, withSeed, seed) {
-  const keep = { tab: SC.tab, grid: SC.grid, hgrid: SC.hgrid, stab: SC.stab, open: SC.open, count: SC.count };
+  const keep = { tab: SC.tab, grid: SC.grid, hgrid: SC.hgrid, stab: SC.stab, open: SC.open, count: SC.count, autocomplete: SC.autocomplete };
   Object.assign(SC, DEF, JSON.parse(JSON.stringify(p)), keep);
   SC.seed = withSeed ? String(seed) : '';
   save();
@@ -772,6 +775,9 @@ function settingsBlock() {
       pick('noise', NOISE_SCHEDULES, { label: '노이즈 스케줄' }),
       pick('quality', QUALITY_PRESETS, { label: '품질 태그 추가', disabled: !v5 }),
       pick('ucPreset', UC_PRESETS, { label: 'UC 프리셋', disabled: !v5 || e.medium })),
+    h('div', { class: 'row between ac-row' },
+      h('div', {}, h('b', {}, '태그 자동완성'), h('p', { class: 'muted small' }, '켜면 입력 중에 태그 후보가 한 줄로 떠요 (한글로 찾기 가능)')),
+      h('button', { type: 'button', class: `sc-switch${SC.autocomplete ? ' on' : ''}`, 'aria-pressed': SC.autocomplete ? 'true' : 'false', 'aria-label': '태그 자동완성', onclick: (ev) => { SC.autocomplete = !SC.autocomplete; save(); ev.currentTarget.classList.toggle('on', SC.autocomplete); ev.currentTarget.setAttribute('aria-pressed', SC.autocomplete ? 'true' : 'false'); if (!SC.autocomplete) document.querySelectorAll('.ed-sug').forEach((x) => { x.hidden = true; }); } }, h('span'))),
     !v5 ? h('p', { class: 'muted small' }, '품질 태그·UC 프리셋은 V5 Full에서만 붙여요.') : null);
   return det;
 }
