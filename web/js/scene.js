@@ -479,10 +479,16 @@ function renderViewer() {
 }
 
 // ---------------------------------------------------------------- 아래 시트 (프롬프트·캐릭터·설정·생성 버튼)
+// 화면 높이: 앱이 막 켜졌거나 뒤에서 돌아온 순간에는 0에 가까운 값이 올 수 있어서 큰 값을 고른다.
+const viewH = () => {
+  const H = Math.max(window.innerHeight || 0, document.documentElement.clientHeight || 0, window.visualViewport?.height || 0);
+  return H >= 320 ? H : Math.max(H, screen.availHeight || 0, 640);
+};
 const snapHeights = () => {
-  const H = window.innerHeight;
+  const H = viewH();
   const go = document.querySelector('.sc-gobar')?.offsetHeight || 118;
-  return [go + 50, Math.round(H * 0.58), H - 70];
+  const min = go + 64;
+  return [min, Math.max(min + 160, Math.round(H * 0.58)), Math.max(min + 200, H - 70)];
 };
 function setSheetHeight(px, animate = true) {
   const el = document.getElementById('scene-sheet');
@@ -495,6 +501,10 @@ function setSheetHeight(px, animate = true) {
   document.documentElement.style.setProperty('--sheet-min', `${min}px`);
 }
 function snapTo(i) { UI.snap = i; setSheetHeight(snapHeights()[i]); }
+// 지금 보이는 높이로 접힘을 판단한다 (기억해 둔 단계가 아니라)
+const isCollapsed = () => UI.h <= snapHeights()[0] + 4;
+function toggleSheet() { if (isCollapsed()) snapTo(1); else snapTo(0); }
+function reapplySheet() { if (C && C.app() === 'scene') setSheetHeight(snapHeights()[UI.snap], false); }
 
 let editors = [];
 export function renderSheet(rebuild = false) {
@@ -510,22 +520,34 @@ export function renderSheet(rebuild = false) {
   el.innerHTML = '';
   editors = [];
   // 끌어서 높이 바꾸기 (손을 떼면 가까운 높이로 붙는다). 그냥 누르면 접기/펴기.
+  // 폰 웹뷰에서 확실하게 받도록 터치 이벤트를 직접 쓰고, 마우스는 따로 받는다.
   let y0 = 0, h0 = 0, moved = false, dragging = false;
-  const handle = h('div', { class: 'sc-handle' }, h('span', { class: 'grip' }),
-    h('div', { class: 'sc-peek' }, String(SC.prompt || '').replace(/\s+/g, ' ').slice(0, 120) || '프롬프트를 넣어 주세요'));
-  handle.addEventListener('pointerdown', (e) => { dragging = true; moved = false; y0 = e.clientY; h0 = UI.h; handle.setPointerCapture(e.pointerId); el.classList.remove('anim'); });
-  handle.addEventListener('pointermove', (e) => { if (!dragging) return; const dy = e.clientY - y0; if (Math.abs(dy) > 6) moved = true; if (moved) setSheetHeight(h0 - dy, false); });
+  const start = (y) => { dragging = true; moved = false; y0 = y; h0 = UI.h; el.classList.remove('anim'); };
+  const move = (y) => { if (!dragging) return; const dy = y - y0; if (Math.abs(dy) > 10) moved = true; if (moved) setSheetHeight(h0 - dy, false); };
   const end = () => {
     if (!dragging) return;
     dragging = false;
+    if (!moved) { toggleSheet(); return; }
     const hs = snapHeights();
-    if (!moved) { snapTo(UI.snap === 0 ? 1 : 0); return; }
     let best = 0;
     hs.forEach((v, i) => { if (Math.abs(v - UI.h) < Math.abs(hs[best] - UI.h)) best = i; });
     snapTo(best);
   };
-  handle.addEventListener('pointerup', end);
-  handle.addEventListener('pointercancel', end);
+  const peek = h('div', { class: 'sc-peek' },
+    h('span', { class: 'sc-peek-text' }, String(SC.prompt || '').replace(/\s+/g, ' ').slice(0, 120) || '프롬프트를 넣어 주세요'),
+    h('span', { class: 'sc-peek-btn' }, '✏️ 편집'));
+  const handle = h('div', { class: 'sc-handle' }, h('span', { class: 'grip' }), peek);
+  handle.addEventListener('touchstart', (e) => start(e.touches[0].clientY), { passive: true });
+  handle.addEventListener('touchmove', (e) => { if (e.cancelable) e.preventDefault(); move(e.touches[0].clientY); }, { passive: false });
+  handle.addEventListener('touchend', (e) => { if (e.cancelable) e.preventDefault(); end(); });
+  handle.addEventListener('touchcancel', () => { moved = true; end(); });
+  handle.addEventListener('mousedown', (e) => {
+    start(e.clientY);
+    const mm = (ev) => move(ev.clientY);
+    const mu = () => { window.removeEventListener('mousemove', mm); window.removeEventListener('mouseup', mu); end(); };
+    window.addEventListener('mousemove', mm);
+    window.addEventListener('mouseup', mu);
+  });
 
   const body = h('div', { class: 'sc-body' },
     modelRow(),
@@ -552,7 +574,7 @@ function modelRow() {
 
 function promptBlock() {
   const isUc = SC.tab === 'uc';
-  const ed = editor({ id: 'sc-prompt', get: () => (isUc ? SC.negative : SC.prompt), set: (v) => { if (isUc) SC.negative = v; else { SC.prompt = v; const p = document.querySelector('.sc-peek'); if (p) p.textContent = v.replace(/\s+/g, ' ').slice(0, 120); } save(); },
+  const ed = editor({ id: 'sc-prompt', get: () => (isUc ? SC.negative : SC.prompt), set: (v) => { if (isUc) SC.negative = v; else { SC.prompt = v; const p = document.querySelector('.sc-peek-text'); if (p) p.textContent = v.replace(/\s+/g, ' ').slice(0, 120); } save(); },
     placeholder: isUc ? '제외할 내용(Undesired Content)' : '프롬프트를 입력하세요. 태그를 치면 자동완성이 떠요' });
   editors.push(ed);
   const ucNote = isUc && sceneEffective(SC).ucPreset !== 'none' ? h('p', { class: 'muted small' }, `UC 프리셋(${UC_PRESETS.find(([k]) => k === SC.ucPreset)?.[1]}) 문구가 앞에 붙어요.`) : null;
@@ -1015,7 +1037,10 @@ export function sceneBack() {
   return false;
 }
 
-window.addEventListener('resize', () => { if (C && C.app() === 'scene') setSheetHeight(snapHeights()[UI.snap], false); });
+window.addEventListener('resize', reapplySheet);
+window.visualViewport?.addEventListener('resize', reapplySheet);
+window.addEventListener('pageshow', reapplySheet);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) setTimeout(reapplySheet, 120); });
 document.addEventListener('keydown', (e) => {
   if (!UI.viewer) return;
   if (e.key === 'Escape') closeViewer();
