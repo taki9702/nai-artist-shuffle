@@ -60,7 +60,8 @@ function weightRuns(text) {
     const prev = text[i - 1];
     NUM.lastIndex = i;
     const m = (!prev || !/[\w.]/.test(prev)) ? NUM.exec(text) : null;
-    if (m) { put(m[0], 'syn'); num = parseFloat(m[1]); i += m[0].length; continue; }
+    // 숫자 앞머리(1.2::)는 그 가중치와 같은 색으로 칠한다. 1.0::처럼 그대로면 기호(초록)로.
+    if (m) { num = parseFloat(m[1]); const w = num * 1.05 ** (curly - square); put(m[0], Math.abs(w - 1) < 0.001 ? 'syn' : Math.round(w * 1000) / 1000); i += m[0].length; continue; }
     if (text.startsWith('::', i)) { put('::', 'syn'); num = null; curly = 0; square = 0; i += 2; continue; }
     const ch = text[i];
     if (ch === '{') { curly++; put(ch, 'syn'); } else if (ch === '}') { curly = Math.max(0, curly - 1); put(ch, 'syn'); } else if (ch === '[') { square++; put(ch, 'syn'); } else if (ch === ']') { square = Math.max(0, square - 1); put(ch, 'syn'); } else {
@@ -72,13 +73,11 @@ function weightRuns(text) {
   flush();
   return out;
 }
-// NAI 화면처럼 글자색은 그대로 두고 형광펜(배경)만 칠한다. 올린 곳 / 내린 곳 두 가지, 세기에 따라 진하기만 달라진다.
+// novelai.net과 같은 형광펜: 올린 곳 빨강, 내린 곳 파랑, 닫는 :: 와 괄호·1.0:: 은 초록. 글자색은 그대로.
 function weightClass(w) {
   if (w === 'syn') return 'syn';
   if (Math.abs(w - 1) < 0.001) return '';
-  if (w < 0) return 'lo3';
-  if (w > 1) return w >= 1.4 ? 'hi3' : w >= 1.15 ? 'hi2' : 'hi1';
-  return w <= 0.5 ? 'lo3' : w <= 0.8 ? 'lo2' : 'lo1';
+  return w > 1 ? 'hi' : 'lo';
 }
 function paint(pre, text) {
   pre.textContent = '';

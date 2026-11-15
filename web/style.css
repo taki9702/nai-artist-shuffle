@@ -473,21 +473,17 @@ body.scene-mode .toast { bottom: auto; top: calc(72px + env(safe-area-inset-top,
 .ed { display: flex; flex-direction: column; gap: 6px; }
 .ed-box { position: relative; background: var(--input); border: 1px solid var(--line); border-radius: 10px; }
 .ed-box:focus-within { border-color: var(--accent); }
-.ed-hl, .ed-ta { margin: 0; padding: 11px 12px; font: 14px/1.6 var(--mono); letter-spacing: 0; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; tab-size: 4; }
+.ed-hl, .ed-ta { margin: 0; padding: 11px 12px; font: 16px/1.6 var(--sans, system-ui, sans-serif); letter-spacing: 0; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; tab-size: 4; }
 .ed-hl { min-height: 104px; color: var(--fg); pointer-events: none; }
 .ed-ta { position: absolute; inset: 0; width: 100%; height: 100%; min-height: 0; resize: none; overflow: hidden; background: transparent !important; border: 0; border-radius: 10px; color: transparent; caret-color: var(--accent); -webkit-text-fill-color: transparent; }
 .ed-ta::placeholder { color: var(--faint); -webkit-text-fill-color: var(--faint); }
 .ed-ta:focus { outline: none; }
 .ed-ta::selection { background: #9773ff66; }
-/* 가중치 형광펜: 배경만 칠한다 (여백을 주면 글자 위치가 어긋나서 커서가 틀어진다) */
-.ed-hl span { border-radius: 3px; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
-.w-syn { color: var(--faint); }
-.w-hi1 { background: rgba(245, 214, 90, .18); }
-.w-hi2 { background: rgba(245, 214, 90, .32); }
-.w-hi3 { background: rgba(245, 214, 90, .48); }
-.w-lo1 { background: rgba(120, 160, 255, .18); }
-.w-lo2 { background: rgba(120, 160, 255, .32); }
-.w-lo3 { background: rgba(120, 160, 255, .48); }
+/* 가중치 형광펜 (novelai.net 화면 색): 배경만 칠한다. 여백을 주면 글자 위치가 어긋나 커서가 틀어진다 */
+.ed-hl span { -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+.w-syn { background: #05300c; }
+.w-hi { background: #3d0614; }
+.w-lo { background: #101a52; }
 /* 자동완성: 프롬프트를 가리지 않게 한 줄짜리 가로 띠 */
 .ed-sug { position: sticky; bottom: 0; z-index: 3; display: flex; flex-direction: row; gap: 6px; overflow-x: auto; overflow-y: hidden; padding: 6px; border: 1px solid var(--accent2); border-radius: 10px; background: var(--panel2); box-shadow: 0 -4px 12px #0008; scrollbar-width: none; }
 .ed-sug::-webkit-scrollbar { display: none; }
