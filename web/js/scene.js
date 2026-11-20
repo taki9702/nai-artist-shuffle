@@ -358,7 +358,7 @@ function validate() {
 async function reserve() {
   const bad = validate();
   if (bad) { C.toast(bad, 'bad'); return; }
-  const n = Math.max(1, Math.min(50, Math.round(SC.count) || 1));
+  const n = Math.max(1, Math.round(SC.count) || 1);
   const params = snapshot();
   const ts = Date.now();
   const fixed = String(SC.seed).trim() === '' ? null : Number(SC.seed);
@@ -978,18 +978,86 @@ function summaryText() {
 }
 function summary() { const s = document.getElementById('sc-summary'); if (s) s.textContent = summaryText(); }
 
+// ---------------------------------------------------------------- 해상도 고르기 (NAI 앱처럼: 분류별 목록 + 비율대로 그린 모양 + 직접 입력)
+const SIZE_GROUPS = [['normal', '노말'], ['large', '라지'], ['wall', '배경화면'], ['small', '스몰'], ['pixiv', '기타']];
+const Z = { open: false };
+const snap64 = (v) => Math.max(64, Math.round((Number(v) || 0) / 64) * 64);
+const orient = (w, hh) => (w === hh ? '정사각' : w > hh ? '가로' : '세로');
+function shapeIcon(w, hh, box = 26) {
+  const k = box / Math.max(w, hh);
+  return h('span', { class: 'shape', style: `width:${box}px;height:${box}px` },
+    h('i', { style: `width:${Math.max(6, Math.round(w * k))}px;height:${Math.max(6, Math.round(hh * k))}px` }));
+}
+function sizeButton() {
+  const [w, hh] = sceneSize(SC);
+  const p = SCENE_SIZES.find(([k]) => k === SC.size);
+  const name = SC.size === 'custom' ? `직접 입력 · ${orient(w, hh)}` : p ? p[1] : orient(w, hh);
+  return h('div', { class: 'field span2' }, h('span', { class: 'field-label' }, '크기'),
+    h('button', { type: 'button', class: 'size-btn', onclick: openSize },
+      shapeIcon(w, hh), h('span', { class: 'size-name' }, name), h('b', { class: 'size-num' }, `${w}×${hh}`), h('span', { class: 'size-caret' }, '▾')));
+}
+function openSize() { Z.open = true; renderSize(); }
+function closeSize(changed) {
+  Z.open = false;
+  renderSize();
+  if (changed) { renderSheet(true); renderGoBar(); }
+}
+function renderSize() {
+  const root = document.getElementById('ssize');
+  if (!root) return;
+  root.innerHTML = '';
+  root.hidden = !Z.open;
+  document.body.classList.toggle('sheet-open', Z.open || P.open || T.open || N.open);
+  if (!Z.open) return;
+  const steps = sceneEffective(SC).steps;
+  const tag = (w, hh) => {
+    const f = isFreeForOpus({ width: w, height: hh, steps });
+    return h('span', { class: `size-tag ${f ? 'free' : 'paid'}` }, f ? '무료' : '유료');
+  };
+  const choose = (k) => { SC.size = k; save(); closeSize(true); };
+  const groups = SIZE_GROUPS.map(([g, gl]) => {
+    const items = SCENE_SIZES.filter(([k]) => k.startsWith(`${g}-`));
+    if (!items.length) return null;
+    return h('div', { class: 'size-group' }, h('div', { class: 'size-gt' }, gl),
+      items.map(([k, l, w, hh]) => h('button', { type: 'button', class: `size-opt${SC.size === k ? ' on' : ''}`, onclick: () => choose(k) },
+        shapeIcon(w, hh), h('span', { class: 'size-name' }, g === 'pixiv' ? l : orient(w, hh)), h('b', { class: 'size-num' }, `${w}×${hh}`), tag(w, hh))));
+  });
+  // 직접 입력: 64의 배수로 맞추고, 모양·무료 여부를 바로 보여 준다
+  const [cw, chh] = sceneSize(SC);
+  const prev = h('span', { class: 'size-prev' });
+  const note = h('p', { class: 'muted small size-note' });
+  const wIn = h('input', { type: 'number', inputmode: 'numeric', min: 64, step: 64, value: cw, 'aria-label': '가로', oninput: () => upd() });
+  const hIn = h('input', { type: 'number', inputmode: 'numeric', min: 64, step: 64, value: chh, 'aria-label': '세로', oninput: () => upd() });
+  const upd = () => {
+    const w = snap64(wIn.value), hh = snap64(hIn.value);
+    prev.replaceChildren(shapeIcon(w, hh, 46));
+    const f = isFreeForOpus({ width: w, height: hh, steps });
+    note.textContent = `${w}×${hh} (${orient(w, hh)}, 64의 배수로 맞춤) · ${f ? '무료 범위' : 'Anlas가 들어요'}${w * hh > MAX_PIXELS ? ' · 너무 커서 NAI가 거절할 수 있어요' : ''}`;
+  };
+  const custom = h('div', { class: `size-group size-custom${SC.size === 'custom' ? ' on' : ''}` },
+    h('div', { class: 'size-gt' }, '직접 입력'),
+    h('div', { class: 'size-inputs' }, prev,
+      h('label', { class: 'field' }, h('span', { class: 'field-label' }, '가로'), wIn),
+      h('span', { class: 'size-x' }, '×'),
+      h('label', { class: 'field' }, h('span', { class: 'field-label' }, '세로'), hIn),
+      h('button', { type: 'button', class: 'btn small size-swap', 'aria-label': '가로세로 바꾸기', onclick: () => { [wIn.value, hIn.value] = [hIn.value, wIn.value]; upd(); } }, '⇄')),
+    note,
+    h('button', { type: 'button', class: 'btn primary', onclick: () => { SC.size = 'custom'; SC.width = snap64(wIn.value); SC.height = snap64(hIn.value); save(); closeSize(true); } }, '이 크기로'));
+  const panel = h('div', { class: 'sheet-panel size-panel', role: 'dialog', 'aria-label': '크기' },
+    h('div', { class: 'row between' }, h('div', { class: 'sheet-title' }, '크기'), h('button', { class: 'btn small', onclick: () => closeSize(false) }, '닫기')),
+    groups, custom);
+  root.append(h('div', { class: 'sheet-back', onclick: () => closeSize(false) }), panel);
+  upd();
+}
+
 function settingsBlock() {
   const e = sceneEffective(SC);
   const v5 = isV5Full(SC.model);
-  const sizeOpts = [...SCENE_SIZES.map(([k, l, w, hh]) => [k, `${l} ${w}×${hh}`]), ['custom', '직접 입력']];
   const seed = h('input', { type: 'number', inputmode: 'numeric', placeholder: '비우면 무작위', value: SC.seed, oninput: (ev) => { SC.seed = ev.target.value.trim(); save(); summary(); } });
   const det = h('details', { class: 'sc-sec sc-settings', open: UI.settingsOpen, ontoggle: (ev) => { UI.settingsOpen = ev.target.open; } },
     h('summary', {}, h('b', {}, '이미지 설정'), h('span', { id: 'sc-summary', class: 'muted small' }, summaryText())),
     h('div', { class: 'grid' },
-      pick('size', sizeOpts, { label: '크기', after: () => renderSheet(true) }),
-      SC.size === 'custom' ? h('div', { class: 'row gap6 span2' },
-        h('label', { class: 'field' }, h('span', { class: 'field-label' }, '가로'), h('input', { type: 'number', step: 64, min: 64, value: SC.width, oninput: (ev) => { SC.width = Number(ev.target.value); save(); renderGoBar(); summary(); } })),
-        h('label', { class: 'field' }, h('span', { class: 'field-label' }, '세로'), h('input', { type: 'number', step: 64, min: 64, value: SC.height, oninput: (ev) => { SC.height = Number(ev.target.value); save(); renderGoBar(); summary(); } }))) : null),
+      sizeButton()),
     slider('steps', { min: 1, max: 50, step: 1, label: e.medium ? '스텝 (Medium은 14 고정)' : '스텝', disabled: e.medium }),
     slider('scale', { min: 0, max: 10, step: 0.1, label: '프롬프트 가이던스', fmt: (v) => Number(v).toFixed(1) }),
     slider('rescale', { min: 0, max: 1, step: 0.02, label: e.medium ? '가이던스 리스케일 (Medium 없음)' : '가이던스 리스케일', disabled: e.medium, fmt: (v) => Number(v).toFixed(2) }),
@@ -1022,7 +1090,6 @@ export function renderGoBar() {
   renderCounts();
   const bar = document.querySelector('.sc-gobar');
   if (!bar) return;
-  bar.innerHTML = '';
   const e = sceneEffective(SC);
   const free = isFreeForOpus({ width: e.width, height: e.height, steps: e.steps });
   const sub = C.sub();
@@ -1033,13 +1100,22 @@ export function renderGoBar() {
   if (sub?.usage) info.push(h('span', { class: `go-usage${sub.usage.percent <= 10 ? ' low' : ''}` }, `Opus 무료 ${sub.usage.percent}% 남음`, h('span', { class: 'muted' }, ` (약 ${Math.round(sub.usage.percent * IMAGES_PER_PERCENT).toLocaleString('ko-KR')}장)`)));
   else if (sub) info.push(h('span', {}, `Anlas ${(sub.anlas ?? 0).toLocaleString('ko-KR')}`));
   if (busy) info.push(h('span', { class: 'go-queue' }, running ? `생성 중 · 대기 ${busy - 1}` : `대기 ${busy}`));
-  const step = (d) => { SC.count = Math.max(1, Math.min(50, n + d)); save(); renderGoBar(); };
+  // 장수를 치는 중이면 입력칸은 그대로 두고 위 안내 줄만 바꾼다 (생성 상태가 바뀌어도 키보드가 안 닫히게)
+  if (document.activeElement?.id === 'sc-count-in' && bar.querySelector('.go-row')) {
+    bar.querySelector('.go-info')?.replaceWith(h('div', { class: 'go-info' }, info));
+    return;
+  }
+  bar.innerHTML = '';
+  const step = (d) => { SC.count = Math.max(1, n + d); save(); renderGoBar(); };
+  const commit = (ev) => { SC.count = Math.max(1, Math.round(Number(ev.target.value)) || 1); save(); renderGoBar(); };
   bar.append(
     h('div', { class: 'go-info' }, info),
     h('div', { class: 'go-row' },
       h('div', { class: 'stepper' },
         h('button', { type: 'button', onclick: () => step(-1), disabled: n <= 1, 'aria-label': '한 장 덜' }, '−'),
-        h('b', {}, `×${n}`),
+        h('label', { class: 'count-box' }, h('span', {}, '×'),
+          h('input', { id: 'sc-count-in', class: 'count-in', type: 'number', inputmode: 'numeric', min: 1, value: n, 'aria-label': '장수 직접 입력',
+            onfocus: (ev) => ev.target.select(), onchange: commit, onkeydown: (ev) => { if (ev.key === 'Enter') ev.target.blur(); } })),
         h('button', { type: 'button', onclick: () => step(1), 'aria-label': '한 장 더' }, '+')),
       // novelai.net의 "Generate 1 Image [0 ⚘]"처럼: 올리브 버튼, 오른쪽 검은 칸에 비용
       h('button', { type: 'button', class: `go-btn${busy ? ' queue' : ''}`, onclick: reserve },
@@ -1372,6 +1448,7 @@ function thumbPicker(x) {
 
 // ---------------------------------------------------------------- 뒤로 가기
 export function sceneBack() {
+  if (Z.open) { closeSize(false); return true; }
   if (P.open) { closePos(); return true; }
   if (T.maskOpen) { closeMask(); return true; }
   if (T.open) { if (T.confirm) { T.confirm = false; renderTools(); } else closeTools(); return true; }

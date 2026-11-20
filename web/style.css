@@ -548,7 +548,14 @@ body.scene-mode .toast { bottom: auto; top: calc(72px + env(safe-area-inset-top,
 .pos.on { background: var(--accent); }
 
 .sc-settings { border-top: 0; padding-top: 0; }
-.sc-settings > summary { display: flex; flex-direction: column; gap: 2px; color: var(--fg); font-size: 16px; }
+/* 이미지 설정: 눌러서 펼치는 버튼처럼 보이게 */
+.sc-settings > summary { list-style: none; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 2px 10px; color: var(--fg); font-size: 16px; background: var(--panel2); border: 1px solid var(--nai-border, var(--line)); border-radius: 10px; padding: 12px 14px; min-height: 60px; }
+.sc-settings > summary::-webkit-details-marker { display: none; }
+.sc-settings > summary b { font-size: 17px; grid-column: 1; }
+.sc-settings > summary #sc-summary { grid-column: 1; color: var(--muted); }
+.sc-settings > summary::after { content: '▾'; grid-column: 2; grid-row: 1 / span 2; font-size: 22px; line-height: 1; transition: transform .15s; }
+.sc-settings[open] > summary::after { transform: rotate(180deg); }
+.sc-settings > summary:active { filter: brightness(1.25); }
 .sc-settings > summary span { font-variant-numeric: tabular-nums; }
 .sc-settings[open] { gap: 14px; }
 .sl { display: flex; flex-direction: column; gap: 2px; }
@@ -727,3 +734,41 @@ body.scene-mode .toast { bottom: auto; top: calc(72px + env(safe-area-inset-top,
 .pos-now { font-size: 15px; font-variant-numeric: tabular-nums; }
 /* 좁은 폰: 캐릭터 머리 줄이 넘치지 않게 */
 @media (max-width: 380px) { .cp-ib { width: 38px; } .cp-arrow { width: 26px; } .cp-name { font-size: 16px; padding: 0 3px; } .cp-sex { padding-left: 8px; } .cp-posb { font-size: 11px; padding: 2px 5px; } }
+
+/* ---------- v3.6: 크기 고르기 (분류 목록 + 비율 모양) ---------- */
+.shape { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; }
+.shape i { display: block; border: 2px solid currentColor; border-radius: 3px; box-sizing: border-box; }
+.size-btn { width: 100%; display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 8px 12px; background: var(--panel2); border: 1px solid var(--nai-border, var(--line)); border-radius: 10px; color: var(--fg); text-align: left; }
+.size-btn .size-name { flex: 1; font-size: 16px; }
+.size-btn .size-num, .size-opt .size-num { font-size: 16px; font-variant-numeric: tabular-nums; }
+.size-caret { font-size: 20px; color: var(--muted); }
+.size-panel { max-height: 90vh; overflow-y: auto; gap: 14px; }
+.size-group { display: flex; flex-direction: column; gap: 6px; }
+.size-gt { font-size: 14px; font-weight: 800; color: var(--muted); letter-spacing: .02em; }
+.size-opt { display: flex; align-items: center; gap: 12px; min-height: 50px; padding: 6px 12px; background: transparent; border: 1px solid var(--nai-border, var(--line)); border-radius: 10px; color: var(--fg); text-align: left; }
+.size-opt .size-name { flex: 1; font-size: 16px; }
+.size-opt.on { background: var(--panel2); border-color: var(--accent); }
+.size-opt.on .shape { color: var(--accent); }
+.size-tag { font-size: 12px; font-weight: 800; border-radius: 6px; padding: 2px 7px; background: var(--panel); }
+.size-tag.free { color: var(--ok); }
+.size-tag.paid { color: #ffa94d; }
+.size-custom { border-top: 1px solid var(--nai-border, var(--line)); padding-top: 12px; }
+.size-inputs { display: flex; align-items: flex-end; gap: 8px; }
+.size-inputs .field { flex: 1; }
+.size-prev { width: 50px; height: 50px; display: flex; align-items: center; justify-content: center; color: var(--accent); flex: 0 0 auto; margin-bottom: 0; }
+.size-x { padding-bottom: 12px; color: var(--muted); }
+.size-swap { flex: 0 0 auto; min-height: 46px; font-size: 18px; }
+.size-note { margin: 0; }
+/* 장수: 가운데 숫자를 눌러 직접 입력 */
+.count-box { display: flex; align-items: center; gap: 1px; font-size: 18px; font-weight: 800; color: var(--muted); }
+.stepper .count-in { width: 3.6em !important; flex: 0 0 auto; min-height: 44px !important; padding: 4px 2px !important; text-align: center; font-size: 18px !important; font-weight: 800; background: var(--input) !important; border: 1px solid var(--nai-border, var(--line)) !important; border-radius: 6px !important; color: var(--fg); -moz-appearance: textfield; }
+.stepper .count-in::-webkit-outer-spin-button, .count-in::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+/* 이미지 설정 안 고르기 칸도 눌리는 칸처럼 */
+:root[data-app="scene"] select, :root[data-app="scene"] input[type=number], :root[data-app="scene"] input[type=text] { border-color: var(--nai-border, var(--line)); }
+:root[data-app="scene"] .field-label, :root[data-app="scene"] .sl-head { color: var(--fg); }
+
+.stepper { flex: 0 0 auto; }
+.go-btn { min-width: 0; }
+.go-btn b { overflow: hidden; text-overflow: ellipsis; }
+.sc-settings .grid { margin-bottom: 8px; }
+.sc-settings .sl { margin-bottom: 4px; }
