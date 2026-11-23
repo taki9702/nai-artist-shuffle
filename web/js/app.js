@@ -8,6 +8,7 @@ import { MODELS, SAMPLERS, SIZES, RETRY_STATUSES, RETRY_DELAYS, AUTH_STATUSES, g
 import * as store from './store.js';
 import { initScene, loadScene, viewScene, renderSheet as renderSceneSheet, takeResult, syncStatus, sceneBack, isSceneKey, renderGoBar, sceneImages } from './scene.js';
 import { initClean, viewClean, cleanBack } from './clean.js';
+import { initCg, loadCg, viewCg, cgBack, cgKey } from './cg.js';
 import {
   native, Filesystem, toBase64, http, copyToClipboard, openExternal, downloadBlob, onBackButton, minimizeApp,
   styleStatusBar, keepAwake, backgroundWork, backgroundNotice, askNotifications, batteryState, shareFile, Gen, fromBase64,
@@ -97,7 +98,7 @@ async function load() {
   S.meta = meta && typeof meta === 'object' ? meta : {};
   S.folders = Array.isArray(folders) ? folders : [];
   S.cups = Array.isArray(cups) ? cups : [];
-  S.app = app === 'scene' || app === 'clean' ? app : 'shuffle';
+  S.app = ['scene', 'clean', 'cg'].includes(app) ? app : 'shuffle';
   document.documentElement.dataset.app = S.app;
   S.settings = { ...DEFAULT_SETTINGS, ...(settings || {}) };
   S.locks = locks || {};
@@ -1960,6 +1961,7 @@ function tasteGroups(names, fallback) {
 const APPS = [
   { id: 'shuffle', title: '작가 셔플', desc: '그림체 탐색 · 뽑기 · 결과 · 기록 · 즐겨찾기 · 그림체', icon: '🎨' },
   { id: 'scene', title: '상황 뽑기', desc: 'NAI 화면처럼 생성 · 여러 장 예약 · 상황 노트', icon: '🎬' },
+  { id: 'cg', title: 'CG 묶음', desc: '이어지는 일러스트를 순서대로 · 한 장씩 크게 · 순서대로 저장', icon: '🖼' },
   { id: 'clean', title: 'EXIF 제거', desc: '메타데이터 지우고 랜덤 이름으로 새로 저장 · JPG/PNG/WEBP', icon: '🧹' },
 ];
 const D = { open: false };
@@ -2071,9 +2073,9 @@ function renderView() {
   const main = document.getElementById('main');
   const y = window.scrollY;
   main.innerHTML = '';
-  const fn = S.app === 'scene' ? viewScene : S.app === 'clean' ? viewClean : { make: viewMake, result: viewResult, history: viewHistory, fav: viewFavs, styles: viewStyles, settings: viewSettings }[S.view];
+  const fn = S.app === 'scene' ? viewScene : S.app === 'clean' ? viewClean : S.app === 'cg' ? viewCg : { make: viewMake, result: viewResult, history: viewHistory, fav: viewFavs, styles: viewStyles, settings: viewSettings }[S.view];
   main.append(fn());
-  window.scrollTo(0, S.app === 'shuffle' && (S.view === 'result' || S.view === 'fav' || S.view === 'styles') ? y : 0);
+  window.scrollTo(0, S.app === 'cg' || (S.app === 'shuffle' && (S.view === 'result' || S.view === 'fav' || S.view === 'styles')) ? y : 0);
   if (S.view === 'result' && S.detail) centerActiveTab();
   document.body.classList.toggle('cup-full', Boolean(main.querySelector('.cupfs')));
   renderUsage();
@@ -2105,6 +2107,7 @@ onBackButton(() => {
   if (CM.open) { closeCopyMenu(); return; }
   if (S.app === 'scene' && sceneBack()) return;
   if (S.app === 'clean' && cleanBack()) return;
+  if (S.app === 'cg' && cgBack()) return;
   if (V.open) { closeViewer(); return; }
   if (D.open) { closeDrawer(); return; }
   if (S.view === 'fav' && S.favTab === 'cup' && activeCup() && !S.cupOut) { S.cupOut = true; renderView(); return; }
@@ -2116,6 +2119,7 @@ onBackButton(() => {
   minimizeApp();
 });
 document.addEventListener('keydown', (e) => {
+  if (S.app === 'cg' && cgKey(e)) return;
   if (!V.open) return;
   if (e.key === 'Escape') closeViewer();
   if (e.key === 'ArrowRight') viewerStep(1);
@@ -2141,9 +2145,11 @@ document.addEventListener('keydown', (e) => {
     },
   });
   initClean({ h, toast, confirmBtn, stamp, renderView: () => renderView(), sceneImages: () => sceneImages(), saveAs: (n, b, folder, quiet) => saveBlobAs(n, b, folder, quiet) });
+  initCg({ h, toast, confirmBtn, stamp, when, renderView: () => renderView(), sceneImages: () => sceneImages(), saveAs: (n, b, folder, quiet) => saveBlobAs(n, b, folder, quiet) });
   try {
     await load();
     await loadScene();
+    await loadCg();
   } catch (e) {
     toast(`저장된 데이터를 읽지 못했어요: ${e?.message || e}`, 'bad');
   }
